@@ -22,6 +22,16 @@ public final class ModItems {
         new Item.Settings().maxCount(1)
     ));
 
+    public static final NoitaSpellItem SPARK_BOLT = register("spark_bolt", new NoitaSpellItem(
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem BOUNCING_BURST = register("bouncing_burst", new NoitaSpellItem(
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem LIGHT_BULLET = register("light_bullet", new NoitaSpellItem(
+        new Item.Settings().maxCount(16)
+    ));
+
     private ModItems() {
     }
 

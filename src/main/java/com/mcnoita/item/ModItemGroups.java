@@ -15,7 +15,12 @@ public final class ModItemGroups {
         FabricItemGroup.builder()
             .displayName(Text.translatable("itemGroup.mc-noita.main"))
             .icon(() -> new ItemStack(ModItems.STARTER_WAND))
-            .entries((context, entries) -> entries.add(ModItems.STARTER_WAND))
+            .entries((context, entries) -> {
+                entries.add(ModItems.STARTER_WAND);
+                entries.add(ModItems.SPARK_BOLT);
+                entries.add(ModItems.BOUNCING_BURST);
+                entries.add(ModItems.LIGHT_BULLET);
+            })
             .build()
     );
 
