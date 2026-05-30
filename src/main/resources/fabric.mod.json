@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "mc-noita",
+  "version": "${version}",
+  "name": "MC Noita",
+  "description": "A Fabric 1.20.4 mod inspired by Noita-style systems.",
+  "authors": [
+    "17740"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/mc-noita/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "main": [
+      "com.mcnoita.MCNoita"
+    ],
+    "client": [
+      "com.mcnoita.client.MCNoitaClient"
+    ],
+    "fabric-datagen": [
+      "com.mcnoita.datagen.MCNoitaDataGenerator"
+    ]
+  },
+  "mixins": [
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.11",
+    "minecraft": "~1.20.4",
+    "java": ">=17",
+    "fabric-api": "*"
+  }
+}

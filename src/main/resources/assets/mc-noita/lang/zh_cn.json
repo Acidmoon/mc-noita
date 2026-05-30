@@ -1,0 +1,17 @@
+{
+  "item.mc-noita.starter_wand": "初始法杖",
+  "itemGroup.mc-noita.main": "MC Noita",
+  "modmenu.nameTranslation.mc-noita": "MC Noita",
+  "tooltip.mc-noita.no": "否",
+  "tooltip.mc-noita.wand.always_cast_count": "始终施放: %s",
+  "tooltip.mc-noita.wand.capacity": "容量: %s",
+  "tooltip.mc-noita.wand.cast_delay": "施放延迟: %s秒",
+  "tooltip.mc-noita.wand.mana_charge_speed": "法力充能速度: %s/秒",
+  "tooltip.mc-noita.wand.mana_max": "法力最大值: %s",
+  "tooltip.mc-noita.wand.recharge_time": "充能时间: %s秒",
+  "tooltip.mc-noita.wand.shuffle": "乱序: %s",
+  "tooltip.mc-noita.wand.speed_multiplier": "速度加成: %s倍",
+  "tooltip.mc-noita.wand.spells_per_cast": "施放数: %s",
+  "tooltip.mc-noita.wand.spread": "散射: %s度",
+  "tooltip.mc-noita.yes": "是"
+}
