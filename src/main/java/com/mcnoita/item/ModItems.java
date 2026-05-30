@@ -1,6 +1,8 @@
 package com.mcnoita.item;
 
 import com.mcnoita.MCNoita;
+import com.mcnoita.spell.NoitaSpellTemplate;
+import com.mcnoita.spell.NoitaSpellType;
 import com.mcnoita.wand.NoitaWandTemplate;
 import net.minecraft.item.Item;
 import net.minecraft.registry.Registries;
@@ -23,12 +25,42 @@ public final class ModItems {
     ));
 
     public static final NoitaSpellItem SPARK_BOLT = register("spark_bolt", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE)
+            .manaDrain(5)
+            .damage(3.0f)
+            .spreadDegrees(1.0f)
+            .speed(750.0f)
+            .castDelaySeconds(0.05f)
+            .rechargeTimeSeconds(0.03f)
+            .lifetimeTicks(60)
+            .build(),
         new Item.Settings().maxCount(16)
     ));
     public static final NoitaSpellItem BOUNCING_BURST = register("bouncing_burst", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE)
+            .manaDrain(5)
+            .damage(3.0f)
+            .spreadDegrees(2.0f)
+            .speed(400.0f)
+            .castDelaySeconds(-0.03f)
+            .rechargeTimeSeconds(0.0f)
+            .lifetimeTicks(80)
+            .build(),
         new Item.Settings().maxCount(16)
     ));
     public static final NoitaSpellItem LIGHT_BULLET = register("light_bullet", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE)
+            .manaDrain(5)
+            .damage(2.0f)
+            .spreadDegrees(0.0f)
+            .speed(1000.0f)
+            .castDelaySeconds(-0.02f)
+            .rechargeTimeSeconds(0.0f)
+            .lifetimeTicks(40)
+            .build(),
         new Item.Settings().maxCount(16)
     ));
 
