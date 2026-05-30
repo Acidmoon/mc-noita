@@ -15,4 +15,6 @@ out/
 
 .vscode/
 
+.codegraph/
+
 src/main/generated/
