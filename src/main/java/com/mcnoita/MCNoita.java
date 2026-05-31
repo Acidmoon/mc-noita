@@ -1,7 +1,9 @@
 package com.mcnoita;
 
+import com.mcnoita.event.ModWandEvents;
 import com.mcnoita.item.ModItemGroups;
 import com.mcnoita.item.ModItems;
+import com.mcnoita.network.ModNetworking;
 import com.mcnoita.screen.ModScreenHandlers;
 import net.fabricmc.api.ModInitializer;
 import net.minecraft.util.Identifier;
@@ -15,6 +17,8 @@ public class MCNoita implements ModInitializer {
     @Override
     public void onInitialize() {
         ModScreenHandlers.register();
+        ModNetworking.registerServerReceivers();
+        ModWandEvents.register();
         ModItems.register();
         ModItemGroups.register();
         LOGGER.info("Initializing MC Noita");
