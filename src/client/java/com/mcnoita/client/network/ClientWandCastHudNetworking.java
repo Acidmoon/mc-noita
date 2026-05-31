@@ -13,7 +13,9 @@ public final class ClientWandCastHudNetworking {
             int mode = buf.readVarInt();
             int progressTicks = buf.readVarInt();
             int totalTicks = buf.readVarInt();
-            client.execute(() -> ClientWandCastHudState.set(mode, progressTicks, totalTicks));
+            float currentMana = buf.readFloat();
+            int manaMax = buf.readVarInt();
+            client.execute(() -> ClientWandCastHudState.set(mode, progressTicks, totalTicks, currentMana, manaMax));
         });
     }
 }

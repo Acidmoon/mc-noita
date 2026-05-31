@@ -32,6 +32,8 @@ public final class NoitaWandCaster {
     private static final String NEXT_CAST_TICK_KEY = "NextCastTick";
     private static final String RECHARGE_START_TICK_KEY = "RechargeStartTick";
     private static final String RECHARGE_END_TICK_KEY = "RechargeEndTick";
+    private static final String CURRENT_MANA_KEY = "CurrentMana";
+    private static final String LAST_MANA_TICK_KEY = "LastManaTick";
 
     private static final float MIN_ARROW_SPEED = 0.2f;
     private static final float MAX_ARROW_SPEED = 4.0f;
@@ -51,14 +53,18 @@ public final class NoitaWandCaster {
         ServerWorld world = player.getServerWorld();
         long now = world.getTime();
         NoitaWandTemplate wandTemplate = wandItem.getTemplate(wandStack);
+        NbtCompound state = getOrCreateCastState(wandStack);
+        float currentMana = updateMana(state, now, wandTemplate);
         DefaultedList<ItemStack> configuredSpells = NoitaWandItem.getSpellStacks(wandStack, wandTemplate.capacity());
         List<Integer> spellSlots = getConfiguredSpellSlots(configuredSpells);
         if (spellSlots.isEmpty()) {
-            clearCastState(wandStack);
+            resetTiming(state);
+            writeDeck(state, List.of());
+            state.putInt(DRAW_INDEX_KEY, 0);
+            state.putInt(SPELLS_HASH_KEY, 0);
             return;
         }
 
-        NbtCompound state = getOrCreateCastState(wandStack);
         int spellsHash = getSpellsHash(configuredSpells);
         if (state.getInt(SPELLS_HASH_KEY) != spellsHash) {
             resetTiming(state);
@@ -79,11 +85,19 @@ public final class NoitaWandCaster {
             return;
         }
 
+        int drawIndexBefore = state.getInt(DRAW_INDEX_KEY);
         CastBlock castBlock = drawCastBlock(state, configuredSpells, wandTemplate);
         if (castBlock.spells().isEmpty()) {
             startRecharge(state, now, wandTemplate);
             return;
         }
+
+        int manaDrain = getCastManaDrain(castBlock);
+        if (manaDrain > 0 && currentMana < manaDrain) {
+            state.putInt(DRAW_INDEX_KEY, drawIndexBefore);
+            return;
+        }
+        spendMana(state, now, wandTemplate, currentMana, manaDrain);
 
         boolean castAnySpell = false;
         float castDelaySeconds = wandTemplate.castDelaySeconds();
@@ -115,30 +129,28 @@ public final class NoitaWandCaster {
 
     public static CastHudState getHudState(ServerPlayerEntity player) {
         ItemStack wandStack = player.getStackInHand(Hand.MAIN_HAND);
-        if (!(wandStack.getItem() instanceof NoitaWandItem)) {
+        if (!(wandStack.getItem() instanceof NoitaWandItem wandItem)) {
             return CastHudState.empty();
         }
 
-        NbtCompound nbt = wandStack.getNbt();
-        if (nbt == null || !nbt.contains(CAST_STATE_KEY, NbtElement.COMPOUND_TYPE)) {
-            return CastHudState.empty();
-        }
-
-        NbtCompound state = nbt.getCompound(CAST_STATE_KEY);
+        NoitaWandTemplate wandTemplate = wandItem.getTemplate(wandStack);
+        NbtCompound state = getOrCreateCastState(wandStack);
         long now = player.getServerWorld().getTime();
+        float currentMana = updateMana(state, now, wandTemplate);
+        int manaMax = wandTemplate.manaMax();
         long rechargeStart = state.getLong(RECHARGE_START_TICK_KEY);
         long rechargeEnd = state.getLong(RECHARGE_END_TICK_KEY);
         if (rechargeEnd > now && rechargeEnd > rechargeStart) {
-            return CastHudState.recharge((int) (now - rechargeStart), (int) (rechargeEnd - rechargeStart));
+            return CastHudState.recharge((int) (now - rechargeStart), (int) (rechargeEnd - rechargeStart), currentMana, manaMax);
         }
 
         long castDelayStart = state.getLong(CAST_DELAY_START_TICK_KEY);
         long castDelayEnd = state.getLong(NEXT_CAST_TICK_KEY);
         if (castDelayEnd > now && castDelayEnd > castDelayStart) {
-            return CastHudState.castDelay((int) (now - castDelayStart), (int) (castDelayEnd - castDelayStart));
+            return CastHudState.castDelay((int) (now - castDelayStart), (int) (castDelayEnd - castDelayStart), currentMana, manaMax);
         }
 
-        return CastHudState.empty();
+        return CastHudState.idle(currentMana, manaMax);
     }
 
     private static CastBlock drawCastBlock(NbtCompound state, DefaultedList<ItemStack> configuredSpells, NoitaWandTemplate wandTemplate) {
@@ -214,11 +226,37 @@ public final class NoitaWandCaster {
         return nbt.getCompound(CAST_STATE_KEY);
     }
 
-    private static void clearCastState(ItemStack wandStack) {
-        NbtCompound nbt = wandStack.getNbt();
-        if (nbt != null) {
-            nbt.remove(CAST_STATE_KEY);
+    private static float updateMana(NbtCompound state, long now, NoitaWandTemplate wandTemplate) {
+        int manaMax = wandTemplate.manaMax();
+        if (manaMax <= 0) {
+            state.putFloat(CURRENT_MANA_KEY, 0.0f);
+            state.putLong(LAST_MANA_TICK_KEY, now);
+            return 0.0f;
         }
+
+        float currentMana = state.contains(CURRENT_MANA_KEY, NbtElement.FLOAT_TYPE) ? state.getFloat(CURRENT_MANA_KEY) : manaMax;
+        long lastManaTick = state.contains(LAST_MANA_TICK_KEY, NbtElement.LONG_TYPE) ? state.getLong(LAST_MANA_TICK_KEY) : now;
+        if (now > lastManaTick && currentMana < manaMax) {
+            currentMana += (now - lastManaTick) * (wandTemplate.manaChargeSpeed() / 20.0f);
+        }
+
+        currentMana = clampMana(currentMana, manaMax);
+        state.putFloat(CURRENT_MANA_KEY, currentMana);
+        state.putLong(LAST_MANA_TICK_KEY, now);
+        return currentMana;
+    }
+
+    private static void spendMana(NbtCompound state, long now, NoitaWandTemplate wandTemplate, float currentMana, int manaDrain) {
+        if (manaDrain == 0) {
+            return;
+        }
+
+        state.putFloat(CURRENT_MANA_KEY, clampMana(currentMana - manaDrain, wandTemplate.manaMax()));
+        state.putLong(LAST_MANA_TICK_KEY, now);
+    }
+
+    private static float clampMana(float mana, int manaMax) {
+        return Math.max(0.0f, Math.min(manaMax, mana));
     }
 
     private static List<Integer> getConfiguredSpellSlots(DefaultedList<ItemStack> configuredSpells) {
@@ -264,6 +302,17 @@ public final class NoitaWandCaster {
         state.put(DECK_KEY, nbtDeck);
     }
 
+    private static int getCastManaDrain(CastBlock castBlock) {
+        int manaDrain = 0;
+        for (ItemStack spellStack : castBlock.spells()) {
+            if (spellStack.isOf(ModItems.SPARK_BOLT) && spellStack.getItem() instanceof NoitaSpellItem spellItem) {
+                manaDrain += spellItem.getTemplate().manaDrain();
+            }
+        }
+
+        return manaDrain;
+    }
+
     private static void spawnSparkBolt(ServerPlayerEntity player, NoitaWandTemplate wandTemplate, NoitaSpellTemplate spellTemplate) {
         ServerWorld world = player.getServerWorld();
         ArrowEntity arrow = new ArrowEntity(EntityType.ARROW, world);
@@ -300,21 +349,25 @@ public final class NoitaWandCaster {
     private record CastBlock(List<ItemStack> spells, boolean deckExhausted) {
     }
 
-    public record CastHudState(int mode, int progressTicks, int totalTicks) {
+    public record CastHudState(int mode, int progressTicks, int totalTicks, float currentMana, int manaMax) {
         public static final int MODE_EMPTY = 0;
         public static final int MODE_CAST_DELAY = 1;
         public static final int MODE_RECHARGE = 2;
 
         private static CastHudState empty() {
-            return new CastHudState(MODE_EMPTY, 0, 0);
+            return new CastHudState(MODE_EMPTY, 0, 0, 0.0f, 0);
         }
 
-        private static CastHudState castDelay(int progressTicks, int totalTicks) {
-            return new CastHudState(MODE_CAST_DELAY, Math.max(0, progressTicks), Math.max(1, totalTicks));
+        private static CastHudState idle(float currentMana, int manaMax) {
+            return new CastHudState(MODE_EMPTY, 0, 0, Math.max(0.0f, currentMana), Math.max(0, manaMax));
         }
 
-        private static CastHudState recharge(int progressTicks, int totalTicks) {
-            return new CastHudState(MODE_RECHARGE, Math.max(0, progressTicks), Math.max(1, totalTicks));
+        private static CastHudState castDelay(int progressTicks, int totalTicks, float currentMana, int manaMax) {
+            return new CastHudState(MODE_CAST_DELAY, Math.max(0, progressTicks), Math.max(1, totalTicks), Math.max(0.0f, currentMana), Math.max(0, manaMax));
+        }
+
+        private static CastHudState recharge(int progressTicks, int totalTicks, float currentMana, int manaMax) {
+            return new CastHudState(MODE_RECHARGE, Math.max(0, progressTicks), Math.max(1, totalTicks), Math.max(0.0f, currentMana), Math.max(0, manaMax));
         }
     }
 }

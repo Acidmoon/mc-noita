@@ -25,6 +25,8 @@ public final class NoitaWandHudSync {
         buf.writeVarInt(state.mode());
         buf.writeVarInt(state.progressTicks());
         buf.writeVarInt(state.totalTicks());
+        buf.writeFloat(state.currentMana());
+        buf.writeVarInt(state.manaMax());
         ServerPlayNetworking.send(player, ModNetworking.WAND_CAST_HUD_SYNC, buf);
     }
 }

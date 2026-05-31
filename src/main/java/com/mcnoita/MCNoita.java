@@ -4,6 +4,7 @@ import com.mcnoita.event.ModWandEvents;
 import com.mcnoita.item.ModItemGroups;
 import com.mcnoita.item.ModItems;
 import com.mcnoita.network.ModNetworking;
+import com.mcnoita.player.NoitaHungerManager;
 import com.mcnoita.player.NoitaHoverManager;
 import com.mcnoita.screen.ModScreenHandlers;
 import com.mcnoita.wand.NoitaWandHudSync;
@@ -20,6 +21,7 @@ public class MCNoita implements ModInitializer {
     public void onInitialize() {
         ModScreenHandlers.register();
         ModNetworking.registerServerReceivers();
+        NoitaHungerManager.register();
         NoitaHoverManager.register();
         NoitaWandHudSync.register();
         ModWandEvents.register();

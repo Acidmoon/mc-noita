@@ -14,12 +14,15 @@ import net.minecraft.util.Hand;
 import net.minecraft.util.collection.DefaultedList;
 
 public class NoitaWandScreenHandler extends ScreenHandler {
-    public static final int BACKGROUND_WIDTH = 176;
+    public static final int BACKGROUND_WIDTH = 224;
     public static final int SPELL_SLOTS_PER_ROW = 9;
     public static final int SLOT_SIZE = 18;
-    public static final int SPELL_START_X = 8;
-    public static final int SPELL_START_Y = 20;
-    public static final int PLAYER_INVENTORY_START_X = 8;
+    private static final int SLOT_GRID_WIDTH = SPELL_SLOTS_PER_ROW * SLOT_SIZE;
+    public static final int WAND_DESCRIPTION_START_Y = 18;
+    public static final int WAND_DESCRIPTION_HEIGHT = 46;
+    public static final int SPELL_START_X = (BACKGROUND_WIDTH - SLOT_GRID_WIDTH) / 2;
+    public static final int SPELL_START_Y = WAND_DESCRIPTION_START_Y + WAND_DESCRIPTION_HEIGHT + 10;
+    public static final int PLAYER_INVENTORY_START_X = SPELL_START_X;
 
     private static final int PLAYER_INVENTORY_ROWS = 3;
     private static final int PLAYER_INVENTORY_COLUMNS = 9;
@@ -30,6 +33,7 @@ public class NoitaWandScreenHandler extends ScreenHandler {
     private final PlayerEntity player;
     private final Hand hand;
     private final ItemStack wandStack;
+    private final NoitaWandTemplate wandTemplate;
     private final DefaultedList<ItemStack> spellStacks;
     private final Inventory wandInventory;
     private final int spellSlotCount;
@@ -46,10 +50,10 @@ public class NoitaWandScreenHandler extends ScreenHandler {
         this.hand = hand;
         this.wandStack = player.getStackInHand(hand);
 
-        NoitaWandTemplate template = this.wandStack.getItem() instanceof NoitaWandItem wandItem
+        this.wandTemplate = this.wandStack.getItem() instanceof NoitaWandItem wandItem
             ? wandItem.getTemplate(this.wandStack)
             : NoitaWandTemplate.builder().build();
-        this.spellSlotCount = Math.max(1, template.capacity());
+        this.spellSlotCount = Math.max(1, this.wandTemplate.capacity());
         this.spellRows = (this.spellSlotCount + SPELL_SLOTS_PER_ROW - 1) / SPELL_SLOTS_PER_ROW;
         this.playerInventoryY = SPELL_START_Y + this.spellRows * SLOT_SIZE + PLAYER_INVENTORY_GAP;
         this.spellStacks = NoitaWandItem.getSpellStacks(this.wandStack, this.spellSlotCount);
@@ -69,6 +73,10 @@ public class NoitaWandScreenHandler extends ScreenHandler {
 
     public int getPlayerInventoryY() {
         return playerInventoryY;
+    }
+
+    public NoitaWandTemplate getWandTemplate() {
+        return wandTemplate;
     }
 
     public static int getBackgroundHeight(int spellRows) {

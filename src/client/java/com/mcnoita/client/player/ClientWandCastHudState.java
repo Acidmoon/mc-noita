@@ -8,14 +8,18 @@ public final class ClientWandCastHudState {
     private static int mode;
     private static int progressTicks;
     private static int totalTicks = 1;
+    private static float currentMana;
+    private static int manaMax;
 
     private ClientWandCastHudState() {
     }
 
-    public static void set(int mode, int progressTicks, int totalTicks) {
+    public static void set(int mode, int progressTicks, int totalTicks, float currentMana, int manaMax) {
         ClientWandCastHudState.mode = mode;
         ClientWandCastHudState.progressTicks = Math.max(0, progressTicks);
         ClientWandCastHudState.totalTicks = Math.max(1, totalTicks);
+        ClientWandCastHudState.currentMana = Math.max(0.0f, currentMana);
+        ClientWandCastHudState.manaMax = Math.max(0, manaMax);
     }
 
     public static int getMode() {
@@ -28,5 +32,17 @@ public final class ClientWandCastHudState {
         }
 
         return Math.max(0.0f, Math.min(1.0f, progressTicks / (float) totalTicks));
+    }
+
+    public static boolean hasMana() {
+        return manaMax > 0;
+    }
+
+    public static float getManaFraction() {
+        if (manaMax <= 0) {
+            return 0.0f;
+        }
+
+        return Math.max(0.0f, Math.min(1.0f, currentMana / manaMax));
     }
 }
