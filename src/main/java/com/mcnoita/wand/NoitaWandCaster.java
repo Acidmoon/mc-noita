@@ -28,7 +28,9 @@ public final class NoitaWandCaster {
     private static final String DECK_KEY = "Deck";
     private static final String SPELLS_HASH_KEY = "SpellsHash";
     private static final String DRAW_INDEX_KEY = "DrawIndex";
+    private static final String CAST_DELAY_START_TICK_KEY = "CastDelayStartTick";
     private static final String NEXT_CAST_TICK_KEY = "NextCastTick";
+    private static final String RECHARGE_START_TICK_KEY = "RechargeStartTick";
     private static final String RECHARGE_END_TICK_KEY = "RechargeEndTick";
 
     private static final float MIN_ARROW_SPEED = 0.2f;
@@ -98,17 +100,45 @@ public final class NoitaWandCaster {
         }
 
         if (!castAnySpell) {
-            state.putLong(NEXT_CAST_TICK_KEY, now + MIN_CAST_DELAY_TICKS);
+            startCastDelay(state, now, MIN_CAST_DELAY_TICKS);
             if (castBlock.deckExhausted()) {
                 startRecharge(state, now, wandTemplate);
             }
             return;
         }
 
-        state.putLong(NEXT_CAST_TICK_KEY, now + secondsToTicks(castDelaySeconds, MIN_CAST_DELAY_TICKS));
+        startCastDelay(state, now, secondsToTicks(castDelaySeconds, MIN_CAST_DELAY_TICKS));
         if (castBlock.deckExhausted()) {
             startRecharge(state, now, wandTemplate.rechargeTimeSeconds() + rechargeTimeSeconds);
         }
+    }
+
+    public static CastHudState getHudState(ServerPlayerEntity player) {
+        ItemStack wandStack = player.getStackInHand(Hand.MAIN_HAND);
+        if (!(wandStack.getItem() instanceof NoitaWandItem)) {
+            return CastHudState.empty();
+        }
+
+        NbtCompound nbt = wandStack.getNbt();
+        if (nbt == null || !nbt.contains(CAST_STATE_KEY, NbtElement.COMPOUND_TYPE)) {
+            return CastHudState.empty();
+        }
+
+        NbtCompound state = nbt.getCompound(CAST_STATE_KEY);
+        long now = player.getServerWorld().getTime();
+        long rechargeStart = state.getLong(RECHARGE_START_TICK_KEY);
+        long rechargeEnd = state.getLong(RECHARGE_END_TICK_KEY);
+        if (rechargeEnd > now && rechargeEnd > rechargeStart) {
+            return CastHudState.recharge((int) (now - rechargeStart), (int) (rechargeEnd - rechargeStart));
+        }
+
+        long castDelayStart = state.getLong(CAST_DELAY_START_TICK_KEY);
+        long castDelayEnd = state.getLong(NEXT_CAST_TICK_KEY);
+        if (castDelayEnd > now && castDelayEnd > castDelayStart) {
+            return CastHudState.castDelay((int) (now - castDelayStart), (int) (castDelayEnd - castDelayStart));
+        }
+
+        return CastHudState.empty();
     }
 
     private static CastBlock drawCastBlock(NbtCompound state, DefaultedList<ItemStack> configuredSpells, NoitaWandTemplate wandTemplate) {
@@ -142,11 +172,13 @@ public final class NoitaWandCaster {
     }
 
     private static void startRecharge(NbtCompound state, long now, float rechargeTimeSeconds) {
+        state.putLong(RECHARGE_START_TICK_KEY, now);
         state.putLong(RECHARGE_END_TICK_KEY, now + secondsToTicks(rechargeTimeSeconds, MIN_RECHARGE_TICKS));
     }
 
     private static void finishRecharge(NbtCompound state, List<Integer> spellSlots, boolean shuffle, long randomSeed, int spellsHash) {
         resetDeck(state, spellSlots, shuffle, randomSeed, spellsHash);
+        state.putLong(RECHARGE_START_TICK_KEY, 0L);
         state.putLong(RECHARGE_END_TICK_KEY, 0L);
     }
 
@@ -162,8 +194,15 @@ public final class NoitaWandCaster {
     }
 
     private static void resetTiming(NbtCompound state) {
+        state.putLong(CAST_DELAY_START_TICK_KEY, 0L);
         state.putLong(NEXT_CAST_TICK_KEY, 0L);
+        state.putLong(RECHARGE_START_TICK_KEY, 0L);
         state.putLong(RECHARGE_END_TICK_KEY, 0L);
+    }
+
+    private static void startCastDelay(NbtCompound state, long now, int ticks) {
+        state.putLong(CAST_DELAY_START_TICK_KEY, now);
+        state.putLong(NEXT_CAST_TICK_KEY, now + ticks);
     }
 
     private static NbtCompound getOrCreateCastState(ItemStack wandStack) {
@@ -259,5 +298,23 @@ public final class NoitaWandCaster {
     }
 
     private record CastBlock(List<ItemStack> spells, boolean deckExhausted) {
+    }
+
+    public record CastHudState(int mode, int progressTicks, int totalTicks) {
+        public static final int MODE_EMPTY = 0;
+        public static final int MODE_CAST_DELAY = 1;
+        public static final int MODE_RECHARGE = 2;
+
+        private static CastHudState empty() {
+            return new CastHudState(MODE_EMPTY, 0, 0);
+        }
+
+        private static CastHudState castDelay(int progressTicks, int totalTicks) {
+            return new CastHudState(MODE_CAST_DELAY, Math.max(0, progressTicks), Math.max(1, totalTicks));
+        }
+
+        private static CastHudState recharge(int progressTicks, int totalTicks) {
+            return new CastHudState(MODE_RECHARGE, Math.max(0, progressTicks), Math.max(1, totalTicks));
+        }
     }
 }

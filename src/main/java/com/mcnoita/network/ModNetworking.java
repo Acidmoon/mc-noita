@@ -8,6 +8,7 @@ import net.minecraft.util.Identifier;
 
 public final class ModNetworking {
     public static final Identifier CAST_WAND = MCNoita.id("cast_wand");
+    public static final Identifier WAND_CAST_HUD_SYNC = MCNoita.id("wand_cast_hud_sync");
     public static final Identifier HOVER_INPUT = MCNoita.id("hover_input");
     public static final Identifier HOVER_SYNC = MCNoita.id("hover_sync");
 
