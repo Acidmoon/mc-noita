@@ -29,11 +29,13 @@ public final class ModItems {
             .type(NoitaSpellType.PROJECTILE)
             .manaDrain(5)
             .damage(3.0f)
-            .spreadDegrees(1.0f)
-            .speed(750.0f)
+            .explosionRadius(2.0f)
+            .speed(1600.0f)
             .castDelaySeconds(0.05f)
             .rechargeTimeSeconds(0.03f)
-            .lifetimeTicks(60)
+            .spreadModifierDegrees(-1.0f)
+            .criticalChancePercent(5.0f)
+            .lifetimeTicks(40)
             .build(),
         new Item.Settings().maxCount(16)
     ));

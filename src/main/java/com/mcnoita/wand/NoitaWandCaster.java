@@ -1,5 +1,6 @@
 package com.mcnoita.wand;
 
+import com.mcnoita.entity.SparkBoltProjectileEntity;
 import com.mcnoita.item.ModItems;
 import com.mcnoita.item.NoitaSpellItem;
 import com.mcnoita.item.NoitaWandItem;
@@ -7,8 +8,6 @@ import com.mcnoita.spell.NoitaSpellTemplate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import net.minecraft.entity.EntityType;
-import net.minecraft.entity.projectile.ArrowEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
@@ -22,6 +21,7 @@ import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.Hand;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.collection.DefaultedList;
+import net.minecraft.util.math.Vec3d;
 
 public final class NoitaWandCaster {
     private static final String CAST_STATE_KEY = "NoitaWandCastState";
@@ -36,10 +36,13 @@ public final class NoitaWandCaster {
     private static final String LAST_MANA_TICK_KEY = "LastManaTick";
 
     private static final float MIN_ARROW_SPEED = 0.2f;
-    private static final float MAX_ARROW_SPEED = 4.0f;
+    private static final float MAX_ARROW_SPEED = 8.0f;
     private static final float NOITA_SPEED_TO_ARROW_SPEED = 300.0f;
     private static final int MIN_CAST_DELAY_TICKS = 1;
     private static final int MIN_RECHARGE_TICKS = 1;
+    private static final double SPELL_SPAWN_FORWARD_OFFSET = 0.65;
+    private static final double SPELL_SPAWN_RIGHT_OFFSET = 0.35;
+    private static final double SPELL_SPAWN_DOWN_OFFSET = 0.25;
 
     private NoitaWandCaster() {
     }
@@ -315,21 +318,36 @@ public final class NoitaWandCaster {
 
     private static void spawnSparkBolt(ServerPlayerEntity player, NoitaWandTemplate wandTemplate, NoitaSpellTemplate spellTemplate) {
         ServerWorld world = player.getServerWorld();
-        ArrowEntity arrow = new ArrowEntity(EntityType.ARROW, world);
-        arrow.setOwner(player);
-        arrow.setPosition(player.getX(), player.getEyeY() - 0.1, player.getZ());
-        arrow.setDamage(Math.max(0.0f, spellTemplate.damage()));
-        arrow.setVelocity(
+        SparkBoltProjectileEntity sparkBolt = new SparkBoltProjectileEntity(
+            world,
             player,
-            player.getPitch(),
-            player.getYaw(),
-            0.0f,
+            spellTemplate.damage(),
+            spellTemplate.criticalChancePercent(),
+            spellTemplate.lifetimeTicks()
+        );
+        Vec3d spawnPosition = getSpellSpawnPosition(player);
+        Vec3d direction = player.getRotationVec(1.0f);
+        sparkBolt.setPosition(spawnPosition);
+        sparkBolt.setVelocity(
+            direction.x,
+            direction.y,
+            direction.z,
             getArrowSpeed(wandTemplate, spellTemplate),
             getDivergence(wandTemplate, spellTemplate)
         );
 
-        world.spawnEntity(arrow);
+        world.spawnEntity(sparkBolt);
         world.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.ENTITY_ARROW_SHOOT, SoundCategory.PLAYERS, 0.6f, 1.35f);
+    }
+
+    private static Vec3d getSpellSpawnPosition(ServerPlayerEntity player) {
+        double yawRadians = Math.toRadians(player.getYaw());
+        Vec3d forward = new Vec3d(-Math.sin(yawRadians), 0.0, Math.cos(yawRadians));
+        Vec3d right = new Vec3d(-Math.cos(yawRadians), 0.0, -Math.sin(yawRadians));
+        return new Vec3d(player.getX(), player.getEyeY(), player.getZ())
+            .add(forward.multiply(SPELL_SPAWN_FORWARD_OFFSET))
+            .add(right.multiply(SPELL_SPAWN_RIGHT_OFFSET))
+            .add(0.0, -SPELL_SPAWN_DOWN_OFFSET, 0.0);
     }
 
     private static float getArrowSpeed(NoitaWandTemplate wandTemplate, NoitaSpellTemplate spellTemplate) {

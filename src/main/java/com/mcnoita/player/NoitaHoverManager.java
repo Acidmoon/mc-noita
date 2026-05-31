@@ -11,7 +11,6 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.entity.damage.DamageTypes;
-import net.minecraft.network.packet.s2c.play.EntityVelocityUpdateS2CPacket;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.math.Vec3d;
 
@@ -19,7 +18,7 @@ public final class NoitaHoverManager {
     public static final int MAX_ENERGY = 1000;
 
     private static final int HOVER_DRAIN_PER_TICK = 12;
-    private static final int GROUND_RECHARGE_PER_TICK = 20;
+    private static final int GROUND_RECHARGE_PER_TICK = MAX_ENERGY * 80 / 100 / 20;
     private static final int AIR_RECHARGE_PER_TICK = 2;
     private static final int HOVER_GRACE_TICKS = 2;
     private static final double HOVER_UPWARD_SPEED = 0.36;
@@ -87,7 +86,6 @@ public final class NoitaHoverManager {
         Vec3d velocity = player.getVelocity();
         player.setVelocity(velocity.x, HOVER_UPWARD_SPEED, velocity.z);
         player.velocityModified = true;
-        player.networkHandler.sendPacket(new EntityVelocityUpdateS2CPacket(player));
     }
 
     private static HoverState getState(ServerPlayerEntity player) {

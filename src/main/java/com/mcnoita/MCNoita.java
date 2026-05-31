@@ -1,5 +1,6 @@
 package com.mcnoita;
 
+import com.mcnoita.entity.ModEntities;
 import com.mcnoita.event.ModWandEvents;
 import com.mcnoita.item.ModItemGroups;
 import com.mcnoita.item.ModItems;
@@ -20,6 +21,7 @@ public class MCNoita implements ModInitializer {
     @Override
     public void onInitialize() {
         ModScreenHandlers.register();
+        ModEntities.register();
         ModNetworking.registerServerReceivers();
         NoitaHungerManager.register();
         NoitaHoverManager.register();

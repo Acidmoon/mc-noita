@@ -7,14 +7,21 @@ import com.mcnoita.client.network.ClientHoverNetworking;
 import com.mcnoita.client.network.ClientWandCastHudNetworking;
 import com.mcnoita.client.network.ClientWandCastEvents;
 import com.mcnoita.client.screen.NoitaWandScreen;
+import com.mcnoita.entity.ModEntities;
 import com.mcnoita.screen.ModScreenHandlers;
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.rendering.v1.EntityRendererRegistry;
 import net.minecraft.client.gui.screen.ingame.HandledScreens;
+import net.minecraft.client.render.entity.FlyingItemEntityRenderer;
 
 public class MCNoitaClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         HandledScreens.register(ModScreenHandlers.WAND_EDITOR, NoitaWandScreen::new);
+        EntityRendererRegistry.register(
+            ModEntities.SPARK_BOLT_PROJECTILE,
+            context -> new FlyingItemEntityRenderer<>(context, 0.55f, true)
+        );
         ClientHoverInputEvents.register();
         ClientHoverNetworking.register();
         ClientWandCastHudNetworking.register();
