@@ -21,7 +21,9 @@ public final class ModNetworking {
         );
         ServerPlayNetworking.registerGlobalReceiver(HOVER_INPUT, (server, player, handler, buf, responseSender) -> {
             boolean jumpHeld = buf.readBoolean();
-            server.execute(() -> NoitaHoverManager.setJumpHeld(player, jumpHeld));
+            float sidewaysInput = buf.readableBytes() >= Float.BYTES ? buf.readFloat() : 0.0f;
+            float forwardInput = buf.readableBytes() >= Float.BYTES ? buf.readFloat() : 0.0f;
+            server.execute(() -> NoitaHoverManager.setHoverInput(player, jumpHeld, sidewaysInput, forwardInput));
         });
     }
 }

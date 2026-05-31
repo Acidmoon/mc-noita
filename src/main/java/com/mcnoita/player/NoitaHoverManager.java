@@ -22,6 +22,9 @@ public final class NoitaHoverManager {
     private static final int AIR_RECHARGE_PER_TICK = 2;
     private static final int HOVER_GRACE_TICKS = 2;
     private static final double HOVER_UPWARD_SPEED = 0.36;
+    private static final double HOVER_HORIZONTAL_SPEED = 0.22;
+    private static final double HOVER_HORIZONTAL_RESPONSE = 0.65;
+    private static final double HOVER_SPRINT_MULTIPLIER = 1.3;
 
     private static final Map<UUID, HoverState> STATES = new HashMap<>();
 
@@ -44,7 +47,14 @@ public final class NoitaHoverManager {
     }
 
     public static void setJumpHeld(ServerPlayerEntity player, boolean jumpHeld) {
-        getState(player).jumpHeld = jumpHeld;
+        setHoverInput(player, jumpHeld, 0.0f, 0.0f);
+    }
+
+    public static void setHoverInput(ServerPlayerEntity player, boolean jumpHeld, float sidewaysInput, float forwardInput) {
+        HoverState state = getState(player);
+        state.jumpHeld = jumpHeld;
+        state.sidewaysInput = sanitizeMovementInput(sidewaysInput);
+        state.forwardInput = sanitizeMovementInput(forwardInput);
     }
 
     private static void tickPlayer(ServerPlayerEntity player) {
@@ -54,6 +64,8 @@ public final class NoitaHoverManager {
         if (player.isCreative() || player.isSpectator()) {
             state.energy = MAX_ENERGY;
             state.jumpHeldTicks = 0;
+            state.sidewaysInput = 0.0f;
+            state.forwardInput = 0.0f;
             syncIfChanged(player, before, state.energy);
             return;
         }
@@ -68,7 +80,7 @@ public final class NoitaHoverManager {
         boolean canHover = state.jumpHeld && state.jumpHeldTicks > HOVER_GRACE_TICKS && !onGround && state.energy > 0;
         if (canHover) {
             state.energy = Math.max(0, state.energy - HOVER_DRAIN_PER_TICK);
-            applyHoverVelocity(player);
+            applyHoverVelocity(player, state);
         } else if (onGround) {
             state.energy = Math.min(MAX_ENERGY, state.energy + GROUND_RECHARGE_PER_TICK);
         } else if (!state.jumpHeld) {
@@ -82,10 +94,61 @@ public final class NoitaHoverManager {
         syncIfChanged(player, before, state.energy);
     }
 
-    private static void applyHoverVelocity(ServerPlayerEntity player) {
+    private static void applyHoverVelocity(ServerPlayerEntity player, HoverState state) {
         Vec3d velocity = player.getVelocity();
-        player.setVelocity(velocity.x, HOVER_UPWARD_SPEED, velocity.z);
+        Vec3d horizontalVelocity = getCreativeLikeHorizontalVelocity(
+            player.getYaw(),
+            player.isSprinting(),
+            velocity,
+            state.sidewaysInput,
+            state.forwardInput
+        );
+        player.setVelocity(horizontalVelocity.x, HOVER_UPWARD_SPEED, horizontalVelocity.z);
         player.velocityModified = true;
+    }
+
+    private static Vec3d getCreativeLikeHorizontalVelocity(float yaw, boolean sprinting, Vec3d velocity, float sidewaysInput, float forwardInput) {
+        Vec3d direction = getInputDirection(yaw, sidewaysInput, forwardInput);
+        if (direction.lengthSquared() <= 1.0E-7) {
+            return new Vec3d(velocity.x, 0.0, velocity.z);
+        }
+
+        double speed = HOVER_HORIZONTAL_SPEED * (sprinting ? HOVER_SPRINT_MULTIPLIER : 1.0);
+        double targetX = direction.x * speed;
+        double targetZ = direction.z * speed;
+        return new Vec3d(
+            lerp(velocity.x, targetX, HOVER_HORIZONTAL_RESPONSE),
+            0.0,
+            lerp(velocity.z, targetZ, HOVER_HORIZONTAL_RESPONSE)
+        );
+    }
+
+    private static Vec3d getInputDirection(float yaw, float sidewaysInput, float forwardInput) {
+        double sideways = sidewaysInput;
+        double forward = forwardInput;
+        double lengthSquared = sideways * sideways + forward * forward;
+        if (lengthSquared <= 1.0E-7) {
+            return Vec3d.ZERO;
+        }
+
+        if (lengthSquared > 1.0) {
+            double length = Math.sqrt(lengthSquared);
+            sideways /= length;
+            forward /= length;
+        }
+
+        double yawRadians = Math.toRadians(yaw);
+        double sin = Math.sin(yawRadians);
+        double cos = Math.cos(yawRadians);
+        return new Vec3d(sideways * cos - forward * sin, 0.0, forward * cos + sideways * sin);
+    }
+
+    private static float sanitizeMovementInput(float input) {
+        return Math.max(-1.0f, Math.min(1.0f, input));
+    }
+
+    private static double lerp(double start, double end, double delta) {
+        return start + (end - start) * delta;
     }
 
     private static HoverState getState(ServerPlayerEntity player) {
@@ -107,5 +170,7 @@ public final class NoitaHoverManager {
         private boolean jumpHeld;
         private int jumpHeldTicks;
         private int energy = MAX_ENERGY;
+        private float sidewaysInput;
+        private float forwardInput;
     }
 }

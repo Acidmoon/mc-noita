@@ -1,7 +1,9 @@
 package com.mcnoita.entity;
 
 import com.mcnoita.item.ModItems;
+import com.mcnoita.particle.ModParticles;
 import com.mcnoita.spell.NoitaSpellDamage;
+import com.mcnoita.world.NoitaTemporaryLightManager;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
@@ -9,9 +11,10 @@ import net.minecraft.entity.projectile.thrown.ThrownItemEntity;
 import net.minecraft.item.Item;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
-import net.minecraft.particle.ParticleTypes;
+import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
 
 public class SparkBoltProjectileEntity extends ThrownItemEntity {
@@ -45,8 +48,11 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             return;
         }
 
-        if (this.getWorld().isClient) {
+        World world = this.getWorld();
+        if (world.isClient) {
             spawnTrailParticles();
+        } else if (world instanceof ServerWorld serverWorld) {
+            NoitaTemporaryLightManager.illuminateTrail(serverWorld, new Vec3d(this.prevX, this.prevY, this.prevZ), this.getPos());
         }
     }
 
@@ -122,10 +128,18 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void spawnTrailParticles() {
         World world = this.getWorld();
-        world.addParticle(ParticleTypes.END_ROD, this.getX(), this.getY(), this.getZ(), 0.0, 0.0, 0.0);
+        world.addParticle(
+            ModParticles.SPARK_TRAIL,
+            this.getX(),
+            this.getY(),
+            this.getZ(),
+            (this.random.nextDouble() - 0.5) * 0.015,
+            (this.random.nextDouble() - 0.5) * 0.015,
+            (this.random.nextDouble() - 0.5) * 0.015
+        );
         if (this.age % 2 == 0) {
             world.addParticle(
-                ParticleTypes.ELECTRIC_SPARK,
+                ModParticles.SPARK_TRAIL,
                 this.getX(),
                 this.getY(),
                 this.getZ(),
@@ -138,16 +152,15 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void spawnHitFlashParticles() {
         World world = this.getWorld();
-        world.addParticle(ParticleTypes.FLASH, this.getX(), this.getY(), this.getZ(), 0.0, 0.0, 0.0);
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < 18; i++) {
             world.addParticle(
-                i % 3 == 0 ? ParticleTypes.FIREWORK : ParticleTypes.END_ROD,
+                ModParticles.SPARK_TRAIL,
                 this.getX(),
                 this.getY(),
                 this.getZ(),
-                (this.random.nextDouble() - 0.5) * 0.18,
-                (this.random.nextDouble() - 0.5) * 0.18,
-                (this.random.nextDouble() - 0.5) * 0.18
+                (this.random.nextDouble() - 0.5) * 0.22,
+                (this.random.nextDouble() - 0.5) * 0.22,
+                (this.random.nextDouble() - 0.5) * 0.22
             );
         }
     }
