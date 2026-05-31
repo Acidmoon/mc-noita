@@ -4,6 +4,7 @@ import com.mcnoita.event.ModWandEvents;
 import com.mcnoita.item.ModItemGroups;
 import com.mcnoita.item.ModItems;
 import com.mcnoita.network.ModNetworking;
+import com.mcnoita.player.NoitaHoverManager;
 import com.mcnoita.screen.ModScreenHandlers;
 import net.fabricmc.api.ModInitializer;
 import net.minecraft.util.Identifier;
@@ -18,6 +19,7 @@ public class MCNoita implements ModInitializer {
     public void onInitialize() {
         ModScreenHandlers.register();
         ModNetworking.registerServerReceivers();
+        NoitaHoverManager.register();
         ModWandEvents.register();
         ModItems.register();
         ModItemGroups.register();

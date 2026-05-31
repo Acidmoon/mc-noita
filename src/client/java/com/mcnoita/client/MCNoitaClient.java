@@ -1,5 +1,8 @@
 package com.mcnoita.client;
 
+import com.mcnoita.client.hud.NoitaHoverHud;
+import com.mcnoita.client.network.ClientHoverInputEvents;
+import com.mcnoita.client.network.ClientHoverNetworking;
 import com.mcnoita.client.network.ClientWandCastEvents;
 import com.mcnoita.client.screen.NoitaWandScreen;
 import com.mcnoita.screen.ModScreenHandlers;
@@ -10,6 +13,9 @@ public class MCNoitaClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         HandledScreens.register(ModScreenHandlers.WAND_EDITOR, NoitaWandScreen::new);
+        ClientHoverInputEvents.register();
+        ClientHoverNetworking.register();
         ClientWandCastEvents.register();
+        NoitaHoverHud.register();
     }
 }
