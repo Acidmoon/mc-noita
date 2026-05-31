@@ -20,7 +20,8 @@ public record NoitaSpellTemplate(
     int lifetimeModifierTicks,
     float recoil,
     boolean piercing,
-    boolean friendlyFire
+    boolean friendlyFire,
+    int trailLightStacks
 ) {
     public static final int UNLIMITED_USES = -1;
 
@@ -43,6 +44,9 @@ public record NoitaSpellTemplate(
         }
         if (maxLifetimeTicks < 0) {
             throw new IllegalArgumentException("maxLifetimeTicks must not be negative");
+        }
+        if (trailLightStacks < 0) {
+            throw new IllegalArgumentException("trailLightStacks must not be negative");
         }
     }
 
@@ -73,6 +77,7 @@ public record NoitaSpellTemplate(
         private float recoil;
         private boolean piercing;
         private boolean friendlyFire;
+        private int trailLightStacks;
 
         private Builder() {
         }
@@ -167,6 +172,11 @@ public record NoitaSpellTemplate(
             return this;
         }
 
+        public Builder trailLightStacks(int trailLightStacks) {
+            this.trailLightStacks = trailLightStacks;
+            return this;
+        }
+
         public NoitaSpellTemplate build() {
             return new NoitaSpellTemplate(
                 type,
@@ -186,7 +196,8 @@ public record NoitaSpellTemplate(
                 lifetimeModifierTicks,
                 recoil,
                 piercing,
-                friendlyFire
+                friendlyFire,
+                trailLightStacks
             );
         }
     }

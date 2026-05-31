@@ -65,6 +65,14 @@ public final class ModItems {
             .build(),
         new Item.Settings().maxCount(16)
     ));
+    public static final NoitaSpellItem LIGHT = register("light", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE_MODIFIER)
+            .manaDrain(0)
+            .trailLightStacks(1)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
 
     private ModItems() {
     }

@@ -34,6 +34,7 @@ public class NoitaSpellItem extends Item {
         addPositive(tooltip, "tooltip.mc-noita.spell.explosion_radius", template.explosionRadius(), Formatting.RED);
         addNonZero(tooltip, "tooltip.mc-noita.spell.spread_degrees", template.spreadDegrees(), Formatting.GRAY);
         addPositive(tooltip, "tooltip.mc-noita.spell.speed", template.speed(), Formatting.GRAY);
+        addPositive(tooltip, "tooltip.mc-noita.spell.trail_light", template.trailLightStacks(), Formatting.YELLOW);
         addNonZero(tooltip, "tooltip.mc-noita.spell.cast_delay", template.castDelaySeconds(), Formatting.GRAY);
         addNonZero(tooltip, "tooltip.mc-noita.spell.recharge_time", template.rechargeTimeSeconds(), Formatting.GRAY);
         addNonZero(tooltip, "tooltip.mc-noita.spell.spread_modifier", template.spreadModifierDegrees(), Formatting.GRAY);

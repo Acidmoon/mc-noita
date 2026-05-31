@@ -18,7 +18,9 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
 
 public final class NoitaTemporaryLightManager {
-    private static final int LIGHT_LEVEL = 8;
+    private static final int BASE_LIGHT_LEVEL = 8;
+    private static final int LIGHT_LEVEL_PER_EXTRA_STACK = 3;
+    private static final int MAX_LIGHT_LEVEL = 15;
     private static final int LIGHT_TICKS = 4;
     private static final int MAX_SAMPLES_PER_TICK = 6;
     private static final double SAMPLE_SPACING = 1.5;
@@ -34,12 +36,17 @@ public final class NoitaTemporaryLightManager {
         ServerLifecycleEvents.SERVER_STOPPING.register(NoitaTemporaryLightManager::clearAll);
     }
 
-    public static void illuminateTrail(ServerWorld world, Vec3d from, Vec3d to) {
+    public static void illuminateTrail(ServerWorld world, Vec3d from, Vec3d to, int lightStacks) {
+        if (lightStacks <= 0) {
+            return;
+        }
+
+        int lightLevel = Math.min(MAX_LIGHT_LEVEL, BASE_LIGHT_LEVEL + (lightStacks - 1) * LIGHT_LEVEL_PER_EXTRA_STACK);
         double distance = from.distanceTo(to);
         int samples = Math.max(1, Math.min(MAX_SAMPLES_PER_TICK, (int) Math.ceil(distance / SAMPLE_SPACING)));
         for (int i = 0; i <= samples; i++) {
             double progress = samples == 0 ? 1.0 : i / (double) samples;
-            placeLight(world, BlockPos.ofFloored(from.lerp(to, progress)));
+            placeLight(world, BlockPos.ofFloored(from.lerp(to, progress)), lightLevel);
         }
     }
 
@@ -70,7 +77,7 @@ public final class NoitaTemporaryLightManager {
         LIGHTS.clear();
     }
 
-    private static void placeLight(ServerWorld world, BlockPos rawPos) {
+    private static void placeLight(ServerWorld world, BlockPos rawPos, int lightLevel) {
         BlockPos pos = rawPos.toImmutable();
         if (!world.isInBuildLimit(pos) || !world.isChunkLoaded(ChunkPos.toLong(pos))) {
             return;
@@ -86,8 +93,8 @@ public final class NoitaTemporaryLightManager {
         long expiresAt = world.getTime() + LIGHT_TICKS;
         worldLights.put(pos, new LightEntry(expiresAt));
 
-        if (!currentState.isOf(Blocks.LIGHT) || currentState.get(LightBlock.LEVEL_15) < LIGHT_LEVEL) {
-            world.setBlockState(pos, Blocks.LIGHT.getDefaultState().with(LightBlock.LEVEL_15, LIGHT_LEVEL), BLOCK_UPDATE_FLAGS);
+        if (!currentState.isOf(Blocks.LIGHT) || currentState.get(LightBlock.LEVEL_15) < lightLevel) {
+            world.setBlockState(pos, Blocks.LIGHT.getDefaultState().with(LightBlock.LEVEL_15, lightLevel), BLOCK_UPDATE_FLAGS);
         }
     }
 

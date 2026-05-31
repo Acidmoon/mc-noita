@@ -20,6 +20,7 @@ public final class ModItemGroups {
                 entries.add(ModItems.SPARK_BOLT);
                 entries.add(ModItems.BOUNCING_BURST);
                 entries.add(ModItems.LIGHT_BULLET);
+                entries.add(ModItems.LIGHT);
             })
             .build()
     );

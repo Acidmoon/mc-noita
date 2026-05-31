@@ -21,22 +21,25 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     private static final String DAMAGE_KEY = "Damage";
     private static final String CRITICAL_CHANCE_PERCENT_KEY = "CriticalChancePercent";
     private static final String MAX_AGE_KEY = "MaxAge";
+    private static final String TRAIL_LIGHT_STACKS_KEY = "TrailLightStacks";
     private static final byte HIT_FLASH_STATUS = 3;
     private static final float CRITICAL_DAMAGE_MULTIPLIER = 5.0f;
 
     private float damage = 3.0f;
     private float criticalChancePercent;
     private int maxAge = 60;
+    private int trailLightStacks;
 
     public SparkBoltProjectileEntity(EntityType<? extends SparkBoltProjectileEntity> entityType, World world) {
         super(entityType, world);
     }
 
-    public SparkBoltProjectileEntity(World world, LivingEntity owner, float damage, float criticalChancePercent, int maxAge) {
+    public SparkBoltProjectileEntity(World world, LivingEntity owner, float damage, float criticalChancePercent, int maxAge, int trailLightStacks) {
         super(ModEntities.SPARK_BOLT_PROJECTILE, owner, world);
         this.damage = Math.max(0.0f, damage);
         this.criticalChancePercent = Math.max(0.0f, criticalChancePercent);
         this.maxAge = Math.max(1, maxAge);
+        this.trailLightStacks = Math.max(0, trailLightStacks);
         this.setNoGravity(true);
     }
 
@@ -51,8 +54,8 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         World world = this.getWorld();
         if (world.isClient) {
             spawnTrailParticles();
-        } else if (world instanceof ServerWorld serverWorld) {
-            NoitaTemporaryLightManager.illuminateTrail(serverWorld, new Vec3d(this.prevX, this.prevY, this.prevZ), this.getPos());
+        } else if (world instanceof ServerWorld serverWorld && this.trailLightStacks > 0) {
+            NoitaTemporaryLightManager.illuminateTrail(serverWorld, new Vec3d(this.prevX, this.prevY, this.prevZ), this.getPos(), this.trailLightStacks);
         }
     }
 
@@ -102,6 +105,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         nbt.putFloat(DAMAGE_KEY, this.damage);
         nbt.putFloat(CRITICAL_CHANCE_PERCENT_KEY, this.criticalChancePercent);
         nbt.putInt(MAX_AGE_KEY, this.maxAge);
+        nbt.putInt(TRAIL_LIGHT_STACKS_KEY, this.trailLightStacks);
     }
 
     @Override
@@ -115,6 +119,9 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         }
         if (nbt.contains(MAX_AGE_KEY, NbtElement.NUMBER_TYPE)) {
             this.maxAge = Math.max(1, nbt.getInt(MAX_AGE_KEY));
+        }
+        if (nbt.contains(TRAIL_LIGHT_STACKS_KEY, NbtElement.NUMBER_TYPE)) {
+            this.trailLightStacks = Math.max(0, nbt.getInt(TRAIL_LIGHT_STACKS_KEY));
         }
     }
 

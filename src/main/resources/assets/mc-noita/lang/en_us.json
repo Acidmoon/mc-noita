@@ -1,5 +1,6 @@
 {
   "item.mc-noita.bouncing_burst": "Bouncing Burst",
+  "item.mc-noita.light": "Light",
   "item.mc-noita.light_bullet": "Light Bullet",
   "item.mc-noita.spark_bolt": "Spark Bolt",
   "item.mc-noita.starter_wand": "Starter Wand",
@@ -32,6 +33,7 @@
   "tooltip.mc-noita.spell.speed_multiplier": "Speed modifier: %sx",
   "tooltip.mc-noita.spell.spread_degrees": "Spread: %s deg",
   "tooltip.mc-noita.spell.spread_modifier": "Spread modifier: %s deg",
+  "tooltip.mc-noita.spell.trail_light": "Illuminates projectile path: +%s",
   "tooltip.mc-noita.spell.type": "Type: %s",
   "tooltip.mc-noita.spell.unlimited": "Unlimited",
   "tooltip.mc-noita.wand.always_cast_count": "Always cast: %s",

@@ -5,6 +5,7 @@ import com.mcnoita.item.ModItems;
 import com.mcnoita.item.NoitaSpellItem;
 import com.mcnoita.item.NoitaWandItem;
 import com.mcnoita.spell.NoitaSpellTemplate;
+import com.mcnoita.spell.NoitaSpellType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -106,13 +107,23 @@ public final class NoitaWandCaster {
         float castDelaySeconds = wandTemplate.castDelaySeconds();
         float rechargeTimeSeconds = 0.0f;
 
+        SpellModifiers modifiers = SpellModifiers.EMPTY;
         for (ItemStack spellStack : castBlock.spells()) {
-            if (spellStack.isOf(ModItems.SPARK_BOLT) && spellStack.getItem() instanceof NoitaSpellItem spellItem) {
+            if (spellStack.getItem() instanceof NoitaSpellItem spellItem) {
                 NoitaSpellTemplate spellTemplate = spellItem.getTemplate();
-                spawnSparkBolt(player, wandTemplate, spellTemplate);
-                castDelaySeconds += spellTemplate.castDelaySeconds();
-                rechargeTimeSeconds += spellTemplate.rechargeTimeSeconds();
-                castAnySpell = true;
+                if (spellTemplate.type() == NoitaSpellType.PROJECTILE_MODIFIER) {
+                    modifiers = modifiers.add(spellTemplate);
+                    continue;
+                }
+
+                if (isProjectileSpell(spellStack)) {
+                    NoitaSpellTemplate modifiedTemplate = modifiers.applyTo(spellTemplate);
+                    spawnSparkBolt(player, wandTemplate, modifiedTemplate);
+                    castDelaySeconds += modifiedTemplate.castDelaySeconds();
+                    rechargeTimeSeconds += modifiedTemplate.rechargeTimeSeconds();
+                    modifiers = SpellModifiers.EMPTY;
+                    castAnySpell = true;
+                }
             }
         }
 
@@ -161,7 +172,8 @@ public final class NoitaWandCaster {
         int drawIndex = state.getInt(DRAW_INDEX_KEY);
         List<ItemStack> spells = new ArrayList<>();
 
-        for (int i = 0; i < wandTemplate.spellsPerCast(); i++) {
+        int projectileDraws = 0;
+        while (projectileDraws < wandTemplate.spellsPerCast()) {
             if (drawIndex >= deck.size()) {
                 break;
             }
@@ -172,6 +184,9 @@ public final class NoitaWandCaster {
                 ItemStack spellStack = configuredSpells.get(spellSlot);
                 if (!spellStack.isEmpty()) {
                     spells.add(spellStack.copy());
+                    if (!isProjectileModifier(spellStack)) {
+                        projectileDraws++;
+                    }
                 }
             }
         }
@@ -308,7 +323,7 @@ public final class NoitaWandCaster {
     private static int getCastManaDrain(CastBlock castBlock) {
         int manaDrain = 0;
         for (ItemStack spellStack : castBlock.spells()) {
-            if (spellStack.isOf(ModItems.SPARK_BOLT) && spellStack.getItem() instanceof NoitaSpellItem spellItem) {
+            if (spellStack.getItem() instanceof NoitaSpellItem spellItem) {
                 manaDrain += spellItem.getTemplate().manaDrain();
             }
         }
@@ -323,7 +338,8 @@ public final class NoitaWandCaster {
             player,
             spellTemplate.damage(),
             spellTemplate.criticalChancePercent(),
-            spellTemplate.lifetimeTicks()
+            spellTemplate.lifetimeTicks(),
+            spellTemplate.trailLightStacks()
         );
         Vec3d spawnPosition = getSpellSpawnPosition(player);
         Vec3d direction = player.getRotationVec(1.0f);
@@ -360,11 +376,60 @@ public final class NoitaWandCaster {
         return Math.max(0.0f, wandTemplate.spreadDegrees() + spellTemplate.spreadDegrees() + spellTemplate.spreadModifierDegrees());
     }
 
+    private static boolean isProjectileSpell(ItemStack spellStack) {
+        return spellStack.isOf(ModItems.SPARK_BOLT) || spellStack.isOf(ModItems.BOUNCING_BURST) || spellStack.isOf(ModItems.LIGHT_BULLET);
+    }
+
+    private static boolean isProjectileModifier(ItemStack spellStack) {
+        return spellStack.getItem() instanceof NoitaSpellItem spellItem && spellItem.getTemplate().type() == NoitaSpellType.PROJECTILE_MODIFIER;
+    }
+
     private static int secondsToTicks(float seconds, int minimumTicks) {
         return Math.max(minimumTicks, Math.round(Math.max(0.0f, seconds) * 20.0f));
     }
 
     private record CastBlock(List<ItemStack> spells, boolean deckExhausted) {
+    }
+
+    private record SpellModifiers(int trailLightStacks, float castDelaySeconds, float rechargeTimeSeconds, float spreadModifierDegrees) {
+        private static final SpellModifiers EMPTY = new SpellModifiers(0, 0.0f, 0.0f, 0.0f);
+
+        private SpellModifiers add(NoitaSpellTemplate modifier) {
+            return new SpellModifiers(
+                this.trailLightStacks + modifier.trailLightStacks(),
+                this.castDelaySeconds + modifier.castDelaySeconds(),
+                this.rechargeTimeSeconds + modifier.rechargeTimeSeconds(),
+                this.spreadModifierDegrees + modifier.spreadModifierDegrees()
+            );
+        }
+
+        private NoitaSpellTemplate applyTo(NoitaSpellTemplate projectile) {
+            if (this.equals(EMPTY)) {
+                return projectile;
+            }
+
+            return NoitaSpellTemplate.builder()
+                .type(projectile.type())
+                .maxUses(projectile.maxUses())
+                .manaDrain(projectile.manaDrain())
+                .damage(projectile.damage())
+                .explosionRadius(projectile.explosionRadius())
+                .spreadDegrees(projectile.spreadDegrees())
+                .speed(projectile.speed())
+                .castDelaySeconds(projectile.castDelaySeconds() + this.castDelaySeconds)
+                .rechargeTimeSeconds(projectile.rechargeTimeSeconds() + this.rechargeTimeSeconds)
+                .spreadModifierDegrees(projectile.spreadModifierDegrees() + this.spreadModifierDegrees)
+                .speedMultiplier(projectile.speedMultiplier())
+                .criticalChancePercent(projectile.criticalChancePercent())
+                .lifetimeTicks(projectile.lifetimeTicks())
+                .maxLifetimeTicks(projectile.maxLifetimeTicks())
+                .lifetimeModifierTicks(projectile.lifetimeModifierTicks())
+                .recoil(projectile.recoil())
+                .piercing(projectile.piercing())
+                .friendlyFire(projectile.friendlyFire())
+                .trailLightStacks(projectile.trailLightStacks() + this.trailLightStacks)
+                .build();
+        }
     }
 
     public record CastHudState(int mode, int progressTicks, int totalTicks, float currentMana, int manaMax) {
