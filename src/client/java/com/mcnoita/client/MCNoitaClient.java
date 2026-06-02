@@ -7,6 +7,7 @@ import com.mcnoita.client.network.ClientHoverNetworking;
 import com.mcnoita.client.network.ClientWandCastHudNetworking;
 import com.mcnoita.client.network.ClientWandCastEvents;
 import com.mcnoita.client.particle.SparkTrailParticle;
+import com.mcnoita.client.render.BombEntityRenderer;
 import com.mcnoita.client.screen.NoitaWandScreen;
 import com.mcnoita.entity.ModEntities;
 import com.mcnoita.particle.ModParticles;
@@ -24,6 +25,10 @@ public class MCNoitaClient implements ClientModInitializer {
         EntityRendererRegistry.register(
             ModEntities.SPARK_BOLT_PROJECTILE,
             context -> new FlyingItemEntityRenderer<>(context, 0.55f, true)
+        );
+        EntityRendererRegistry.register(
+            ModEntities.BOMB_PROJECTILE,
+            BombEntityRenderer::new
         );
         ParticleFactoryRegistry.getInstance().register(ModParticles.SPARK_TRAIL, SparkTrailParticle.Factory::new);
         ClientHoverInputEvents.register();

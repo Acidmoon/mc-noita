@@ -65,6 +65,22 @@ public final class ModItems {
             .build(),
         new Item.Settings().maxCount(16)
     ));
+    public static final NoitaSpellItem BOMB = register("bomb", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE)
+            .maxUses(3)
+            .manaDrain(25)
+            .damage(125.0f)
+            .explosionRadius(4.0f)
+            .speed(200.0f)
+            .castDelaySeconds(1.67f)
+            .rechargeTimeSeconds(0.0f)
+            .spreadDegrees(0.0f)
+            .lifetimeTicks(60)
+            .friendlyFire(true)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
     public static final NoitaSpellItem LIGHT = register("light", new NoitaSpellItem(
         NoitaSpellTemplate.builder()
             .type(NoitaSpellType.PROJECTILE_MODIFIER)

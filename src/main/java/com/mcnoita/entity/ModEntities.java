@@ -1,6 +1,7 @@
 package com.mcnoita.entity;
 
 import com.mcnoita.MCNoita;
+import net.fabricmc.fabric.api.object.builder.v1.entity.FabricDefaultAttributeRegistry;
 import net.fabricmc.fabric.api.object.builder.v1.entity.FabricEntityTypeBuilder;
 import net.minecraft.entity.EntityDimensions;
 import net.minecraft.entity.EntityType;
@@ -21,10 +22,24 @@ public final class ModEntities {
             .build()
     );
 
+    public static final EntityType<BombEntity> BOMB_PROJECTILE = Registry.register(
+        Registries.ENTITY_TYPE,
+        MCNoita.id("bomb_projectile"),
+        FabricEntityTypeBuilder.<BombEntity>createLiving()
+            .spawnGroup(SpawnGroup.MISC)
+            .entityFactory(BombEntity::new)
+            .dimensions(EntityDimensions.fixed(0.4f, 0.4f))
+            .trackRangeBlocks(64)
+            .trackedUpdateRate(3)
+            .forceTrackedVelocityUpdates(true)
+            .build()
+    );
+
     private ModEntities() {
     }
 
     public static void register() {
+        FabricDefaultAttributeRegistry.register(BOMB_PROJECTILE, BombEntity.createBombAttributes());
         MCNoita.LOGGER.info("Registering MC Noita entities");
     }
 }

@@ -1,5 +1,6 @@
 package com.mcnoita.wand;
 
+import com.mcnoita.entity.BombEntity;
 import com.mcnoita.entity.SparkBoltProjectileEntity;
 import com.mcnoita.item.ModItems;
 import com.mcnoita.item.NoitaSpellItem;
@@ -110,6 +111,9 @@ public final class NoitaWandCaster {
         SpellModifiers modifiers = SpellModifiers.EMPTY;
         for (ItemStack spellStack : castBlock.spells()) {
             if (spellStack.getItem() instanceof NoitaSpellItem spellItem) {
+                if (!NoitaSpellItem.hasUsesRemaining(spellStack)) {
+                    continue;
+                }
                 NoitaSpellTemplate spellTemplate = spellItem.getTemplate();
                 if (spellTemplate.type() == NoitaSpellType.PROJECTILE_MODIFIER) {
                     modifiers = modifiers.add(spellTemplate);
@@ -118,7 +122,11 @@ public final class NoitaWandCaster {
 
                 if (isProjectileSpell(spellStack)) {
                     NoitaSpellTemplate modifiedTemplate = modifiers.applyTo(spellTemplate);
-                    spawnSparkBolt(player, wandTemplate, modifiedTemplate);
+                    if (spellStack.isOf(ModItems.BOMB)) {
+                        spawnBomb(player, wandTemplate, modifiedTemplate);
+                    } else {
+                        spawnSparkBolt(player, wandTemplate, modifiedTemplate);
+                    }
                     castDelaySeconds += modifiedTemplate.castDelaySeconds();
                     rechargeTimeSeconds += modifiedTemplate.rechargeTimeSeconds();
                     modifiers = SpellModifiers.EMPTY;
@@ -138,6 +146,10 @@ public final class NoitaWandCaster {
         startCastDelay(state, now, secondsToTicks(castDelaySeconds, MIN_CAST_DELAY_TICKS));
         if (castBlock.deckExhausted()) {
             startRecharge(state, now, wandTemplate.rechargeTimeSeconds() + rechargeTimeSeconds);
+        }
+
+        if (consumeLimitedUseSpells(configuredSpells, castBlock.usedSlots())) {
+            NoitaWandItem.setSpellStacks(wandStack, configuredSpells);
         }
     }
 
@@ -171,6 +183,7 @@ public final class NoitaWandCaster {
         List<Integer> deck = readDeck(state);
         int drawIndex = state.getInt(DRAW_INDEX_KEY);
         List<ItemStack> spells = new ArrayList<>();
+        List<Integer> usedSlots = new ArrayList<>();
 
         int projectileDraws = 0;
         while (projectileDraws < wandTemplate.spellsPerCast()) {
@@ -183,7 +196,11 @@ public final class NoitaWandCaster {
             if (spellSlot >= 0 && spellSlot < configuredSpells.size()) {
                 ItemStack spellStack = configuredSpells.get(spellSlot);
                 if (!spellStack.isEmpty()) {
+                    if (!NoitaSpellItem.hasUsesRemaining(spellStack)) {
+                        continue;
+                    }
                     spells.add(spellStack.copy());
+                    usedSlots.add(spellSlot);
                     if (!isProjectileModifier(spellStack)) {
                         projectileDraws++;
                     }
@@ -194,7 +211,7 @@ public final class NoitaWandCaster {
         state.putInt(DRAW_INDEX_KEY, drawIndex);
         boolean deckExhausted = drawIndex >= deck.size();
 
-        return new CastBlock(spells, deckExhausted);
+        return new CastBlock(spells, usedSlots, deckExhausted);
     }
 
     private static void startRecharge(NbtCompound state, long now, NoitaWandTemplate wandTemplate) {
@@ -356,6 +373,28 @@ public final class NoitaWandCaster {
         world.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.ENTITY_ARROW_SHOOT, SoundCategory.PLAYERS, 0.6f, 1.35f);
     }
 
+    private static void spawnBomb(ServerPlayerEntity player, NoitaWandTemplate wandTemplate, NoitaSpellTemplate spellTemplate) {
+        ServerWorld world = player.getServerWorld();
+        BombEntity bomb = new BombEntity(
+            world,
+            player,
+            spellTemplate.explosionRadius(),
+            spellTemplate.lifetimeTicks()
+        );
+        Vec3d spawnPosition = getSpellSpawnPosition(player);
+        Vec3d direction = player.getRotationVec(1.0f);
+        bomb.setPosition(spawnPosition);
+        float speed = getArrowSpeed(wandTemplate, spellTemplate);
+        bomb.setVelocity(
+            direction.x * speed,
+            direction.y * speed,
+            direction.z * speed
+        );
+
+        world.spawnEntity(bomb);
+        world.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.ENTITY_TNT_PRIMED, SoundCategory.PLAYERS, 0.8f, 1.0f);
+    }
+
     private static Vec3d getSpellSpawnPosition(ServerPlayerEntity player) {
         double yawRadians = Math.toRadians(player.getYaw());
         Vec3d forward = new Vec3d(-Math.sin(yawRadians), 0.0, Math.cos(yawRadians));
@@ -377,18 +416,31 @@ public final class NoitaWandCaster {
     }
 
     private static boolean isProjectileSpell(ItemStack spellStack) {
-        return spellStack.isOf(ModItems.SPARK_BOLT) || spellStack.isOf(ModItems.BOUNCING_BURST) || spellStack.isOf(ModItems.LIGHT_BULLET);
+        return spellStack.isOf(ModItems.SPARK_BOLT) || spellStack.isOf(ModItems.BOUNCING_BURST) || spellStack.isOf(ModItems.LIGHT_BULLET) || spellStack.isOf(ModItems.BOMB);
     }
 
     private static boolean isProjectileModifier(ItemStack spellStack) {
         return spellStack.getItem() instanceof NoitaSpellItem spellItem && spellItem.getTemplate().type() == NoitaSpellType.PROJECTILE_MODIFIER;
     }
 
+    private static boolean consumeLimitedUseSpells(DefaultedList<ItemStack> configuredSpells, List<Integer> usedSlots) {
+        boolean consumedAny = false;
+        for (int slot : usedSlots) {
+            if (slot >= 0 && slot < configuredSpells.size()) {
+                ItemStack spellStack = configuredSpells.get(slot);
+                int remainingBefore = NoitaSpellItem.getRemainingUses(spellStack);
+                NoitaSpellItem.consumeUse(spellStack);
+                consumedAny |= NoitaSpellItem.getRemainingUses(spellStack) != remainingBefore;
+            }
+        }
+        return consumedAny;
+    }
+
     private static int secondsToTicks(float seconds, int minimumTicks) {
         return Math.max(minimumTicks, Math.round(Math.max(0.0f, seconds) * 20.0f));
     }
 
-    private record CastBlock(List<ItemStack> spells, boolean deckExhausted) {
+    private record CastBlock(List<ItemStack> spells, List<Integer> usedSlots, boolean deckExhausted) {
     }
 
     private record SpellModifiers(int trailLightStacks, float castDelaySeconds, float rechargeTimeSeconds, float spreadModifierDegrees) {

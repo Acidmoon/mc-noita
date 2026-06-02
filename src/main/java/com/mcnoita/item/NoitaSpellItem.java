@@ -5,11 +5,14 @@ import java.util.List;
 import net.minecraft.client.item.TooltipContext;
 import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtElement;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import net.minecraft.world.World;
 
 public class NoitaSpellItem extends Item {
+    private static final String REMAINING_USES_KEY = "RemainingUses";
     private final NoitaSpellTemplate template;
 
     public NoitaSpellItem(NoitaSpellTemplate template, Settings settings) {
@@ -21,13 +24,50 @@ public class NoitaSpellItem extends Item {
         return template;
     }
 
+    public static int getRemainingUses(ItemStack stack) {
+        if (!(stack.getItem() instanceof NoitaSpellItem spellItem)) {
+            return 0;
+        }
+        if (!spellItem.template.hasLimitedUses()) {
+            return -1;
+        }
+        NbtCompound nbt = stack.getNbt();
+        if (nbt == null || !nbt.contains(REMAINING_USES_KEY, NbtElement.INT_TYPE)) {
+            return spellItem.template.maxUses();
+        }
+        return nbt.getInt(REMAINING_USES_KEY);
+    }
+
+    public static void consumeUse(ItemStack stack) {
+        if (!(stack.getItem() instanceof NoitaSpellItem spellItem)) {
+            return;
+        }
+        if (!spellItem.template.hasLimitedUses()) {
+            return;
+        }
+        int remaining = getRemainingUses(stack);
+        stack.getOrCreateNbt().putInt(REMAINING_USES_KEY, Math.max(0, remaining - 1));
+    }
+
+    public static boolean hasUsesRemaining(ItemStack stack) {
+        int remaining = getRemainingUses(stack);
+        return remaining != 0;
+    }
+
     @Override
     public void appendTooltip(ItemStack stack, World world, List<Text> tooltip, TooltipContext context) {
         tooltip.add(Text.translatable("tooltip.mc-noita.spell.type", Text.translatable(template.type().getTranslationKey())).formatted(Formatting.LIGHT_PURPLE));
-        tooltip.add(Text.translatable(
-            "tooltip.mc-noita.spell.max_uses",
-            template.hasLimitedUses() ? template.maxUses() : Text.translatable("tooltip.mc-noita.spell.unlimited")
-        ).formatted(Formatting.GRAY));
+        if (template.hasLimitedUses()) {
+            int remaining = getRemainingUses(stack);
+            tooltip.add(Text.translatable("tooltip.mc-noita.spell.remaining_uses", remaining, template.maxUses()).formatted(
+                remaining > 0 ? Formatting.GRAY : Formatting.DARK_RED
+            ));
+        } else {
+            tooltip.add(Text.translatable(
+                "tooltip.mc-noita.spell.max_uses",
+                Text.translatable("tooltip.mc-noita.spell.unlimited")
+            ).formatted(Formatting.GRAY));
+        }
         tooltip.add(Text.translatable("tooltip.mc-noita.spell.mana_drain", template.manaDrain()).formatted(Formatting.BLUE));
 
         addNonZero(tooltip, "tooltip.mc-noita.spell.damage", template.damage(), Formatting.RED);

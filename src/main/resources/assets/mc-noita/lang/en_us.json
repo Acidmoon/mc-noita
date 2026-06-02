@@ -1,4 +1,5 @@
 {
+  "item.mc-noita.bomb": "Bomb",
   "item.mc-noita.bouncing_burst": "Bouncing Burst",
   "item.mc-noita.light": "Light",
   "item.mc-noita.light_bullet": "Light Bullet",
@@ -26,6 +27,7 @@
   "tooltip.mc-noita.spell.mana_drain": "Mana drain: %s",
   "tooltip.mc-noita.spell.max_lifetime": "Max lifetime limit: %s frames",
   "tooltip.mc-noita.spell.max_uses": "Uses: %s",
+  "tooltip.mc-noita.spell.remaining_uses": "Uses: %s/%s",
   "tooltip.mc-noita.spell.piercing": "Piercing/penetrating",
   "tooltip.mc-noita.spell.recharge_time": "Recharge time modifier: %ss",
   "tooltip.mc-noita.spell.recoil": "Recoil: %s",
