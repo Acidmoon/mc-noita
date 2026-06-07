@@ -2,6 +2,7 @@ package com.mcnoita.item;
 
 import com.mcnoita.MCNoita;
 import com.mcnoita.spell.NoitaSpellTemplate;
+import com.mcnoita.spell.NoitaSpellTriggerMode;
 import com.mcnoita.spell.NoitaSpellType;
 import com.mcnoita.wand.NoitaWandTemplate;
 import net.minecraft.item.Item;
@@ -36,6 +37,39 @@ public final class ModItems {
             .spreadModifierDegrees(-1.0f)
             .criticalChancePercent(5.0f)
             .lifetimeTicks(40)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem SPARK_BOLT_TRIGGER = register("spark_bolt_trigger", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE)
+            .manaDrain(10)
+            .damage(3.0f)
+            .explosionRadius(2.0f)
+            .speed(1600.0f)
+            .castDelaySeconds(0.05f)
+            .rechargeTimeSeconds(0.03f)
+            .criticalChancePercent(5.0f)
+            .lifetimeTicks(40)
+            .triggerMode(NoitaSpellTriggerMode.HIT)
+            .triggerDrawCount(1)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem SPARK_BOLT_TIMER = register("spark_bolt_timer", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE)
+            .manaDrain(10)
+            .damage(3.0f)
+            .explosionRadius(2.0f)
+            .speed(1600.0f)
+            .castDelaySeconds(0.05f)
+            .rechargeTimeSeconds(0.03f)
+            .criticalChancePercent(5.0f)
+            .lifetimeTicks(40)
+            .triggerMode(NoitaSpellTriggerMode.TIMER)
+            .triggerDrawCount(1)
+            .triggerDelayTicks(10)
             .build(),
         new Item.Settings().maxCount(16)
     ));
@@ -81,11 +115,78 @@ public final class ModItems {
             .build(),
         new Item.Settings().maxCount(16)
     ));
+    public static final NoitaSpellItem BOMB_DEATH_TRIGGER = register("bomb_death_trigger", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE)
+            .maxUses(3)
+            .manaDrain(35)
+            .damage(125.0f)
+            .explosionRadius(4.0f)
+            .speed(200.0f)
+            .castDelaySeconds(1.67f)
+            .rechargeTimeSeconds(0.0f)
+            .spreadDegrees(0.0f)
+            .lifetimeTicks(60)
+            .friendlyFire(true)
+            .triggerMode(NoitaSpellTriggerMode.DEATH)
+            .triggerDrawCount(1)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem DOUBLE_SPELL = register("double_spell", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.MULTICAST)
+            .manaDrain(0)
+            .drawCount(2)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem DUPLICATE = register("duplicate", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.OTHER)
+            .manaDrain(250)
+            .castDelaySeconds(20.0f / 60.0f)
+            .rechargeTimeSeconds(20.0f / 60.0f)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem WAND_REFRESH = register("wand_refresh", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.UTILITY)
+            .manaDrain(20)
+            .rechargeTimeSeconds(-25.0f / 60.0f)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem ALPHA = register("alpha", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.OTHER)
+            .manaDrain(40)
+            .castDelaySeconds(15.0f / 60.0f)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem GAMMA = register("gamma", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.OTHER)
+            .manaDrain(40)
+            .castDelaySeconds(15.0f / 60.0f)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
     public static final NoitaSpellItem LIGHT = register("light", new NoitaSpellItem(
         NoitaSpellTemplate.builder()
             .type(NoitaSpellType.PROJECTILE_MODIFIER)
             .manaDrain(0)
             .trailLightStacks(1)
+            .build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem ADD_MANA = register("add_mana", new NoitaSpellItem(
+        NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.PROJECTILE_MODIFIER)
+            .manaDrain(-30)
+            .castDelaySeconds(10.0f / 60.0f)
             .build(),
         new Item.Settings().maxCount(16)
     ));

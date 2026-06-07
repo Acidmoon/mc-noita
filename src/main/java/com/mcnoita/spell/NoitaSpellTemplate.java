@@ -21,12 +21,17 @@ public record NoitaSpellTemplate(
     float recoil,
     boolean piercing,
     boolean friendlyFire,
-    int trailLightStacks
+    int trailLightStacks,
+    int drawCount,
+    NoitaSpellTriggerMode triggerMode,
+    int triggerDrawCount,
+    int triggerDelayTicks
 ) {
     public static final int UNLIMITED_USES = -1;
 
     public NoitaSpellTemplate {
         Objects.requireNonNull(type, "type");
+        Objects.requireNonNull(triggerMode, "triggerMode");
         if (maxUses < UNLIMITED_USES) {
             throw new IllegalArgumentException("maxUses must be unlimited or non-negative");
         }
@@ -47,6 +52,15 @@ public record NoitaSpellTemplate(
         }
         if (trailLightStacks < 0) {
             throw new IllegalArgumentException("trailLightStacks must not be negative");
+        }
+        if (drawCount < 0) {
+            throw new IllegalArgumentException("drawCount must not be negative");
+        }
+        if (triggerDrawCount < 0) {
+            throw new IllegalArgumentException("triggerDrawCount must not be negative");
+        }
+        if (triggerDelayTicks < 0) {
+            throw new IllegalArgumentException("triggerDelayTicks must not be negative");
         }
     }
 
@@ -78,6 +92,10 @@ public record NoitaSpellTemplate(
         private boolean piercing;
         private boolean friendlyFire;
         private int trailLightStacks;
+        private int drawCount = 1;
+        private NoitaSpellTriggerMode triggerMode = NoitaSpellTriggerMode.NONE;
+        private int triggerDrawCount;
+        private int triggerDelayTicks;
 
         private Builder() {
         }
@@ -177,6 +195,26 @@ public record NoitaSpellTemplate(
             return this;
         }
 
+        public Builder drawCount(int drawCount) {
+            this.drawCount = drawCount;
+            return this;
+        }
+
+        public Builder triggerMode(NoitaSpellTriggerMode triggerMode) {
+            this.triggerMode = triggerMode;
+            return this;
+        }
+
+        public Builder triggerDrawCount(int triggerDrawCount) {
+            this.triggerDrawCount = triggerDrawCount;
+            return this;
+        }
+
+        public Builder triggerDelayTicks(int triggerDelayTicks) {
+            this.triggerDelayTicks = triggerDelayTicks;
+            return this;
+        }
+
         public NoitaSpellTemplate build() {
             return new NoitaSpellTemplate(
                 type,
@@ -197,7 +235,11 @@ public record NoitaSpellTemplate(
                 recoil,
                 piercing,
                 friendlyFire,
-                trailLightStacks
+                trailLightStacks,
+                drawCount,
+                triggerMode,
+                triggerDrawCount,
+                triggerDelayTicks
             );
         }
     }

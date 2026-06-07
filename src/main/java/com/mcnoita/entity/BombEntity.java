@@ -1,6 +1,7 @@
 package com.mcnoita.entity;
 
 import com.mcnoita.item.ModItems;
+import com.mcnoita.spell.NoitaProjectilePayload;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.attribute.DefaultAttributeContainer;
@@ -14,22 +15,32 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
 
 import java.util.Collections;
+import java.util.List;
 
 public class BombEntity extends LivingEntity {
     private static final String EXPLOSION_RADIUS_KEY = "ExplosionRadius";
+    private static final String TRIGGER_PAYLOAD_RELEASED_KEY = "TriggerPayloadReleased";
+    private static final String TRIGGER_PAYLOADS_KEY = "TriggerPayloads";
 
     private float explosionRadius = 4.0f;
     private LivingEntity caster;
     private boolean exploded;
+    private boolean triggerPayloadReleased;
+    private List<NoitaProjectilePayload> triggerPayloads = List.of();
 
     public BombEntity(EntityType<? extends BombEntity> entityType, World world) {
         super(entityType, world);
     }
 
     public BombEntity(World world, LivingEntity caster, float explosionRadius, int lifetimeTicks) {
+        this(world, caster, explosionRadius, lifetimeTicks, List.of());
+    }
+
+    public BombEntity(World world, LivingEntity caster, float explosionRadius, int lifetimeTicks, List<NoitaProjectilePayload> triggerPayloads) {
         super(ModEntities.BOMB_PROJECTILE, world);
         this.caster = caster;
         this.explosionRadius = Math.max(0.0f, explosionRadius);
+        this.triggerPayloads = List.copyOf(triggerPayloads);
         float maxHp = lifetimeTicks;
         this.getAttributeInstance(EntityAttributes.GENERIC_MAX_HEALTH).setBaseValue(maxHp);
         this.setHealth(maxHp);
@@ -75,6 +86,7 @@ public class BombEntity extends LivingEntity {
         World world = this.getWorld();
         this.discard();
         if (!world.isClient) {
+            releaseTriggerPayload();
             world.createExplosion(
                 this,
                 this.getX(), this.getY(), this.getZ(),
@@ -137,6 +149,8 @@ public class BombEntity extends LivingEntity {
     public void writeCustomDataToNbt(NbtCompound nbt) {
         super.writeCustomDataToNbt(nbt);
         nbt.putFloat(EXPLOSION_RADIUS_KEY, this.explosionRadius);
+        nbt.putBoolean(TRIGGER_PAYLOAD_RELEASED_KEY, this.triggerPayloadReleased);
+        nbt.put(TRIGGER_PAYLOADS_KEY, NoitaProjectilePayload.toNbtList(this.triggerPayloads));
     }
 
     @Override
@@ -145,5 +159,54 @@ public class BombEntity extends LivingEntity {
         if (nbt.contains(EXPLOSION_RADIUS_KEY, NbtElement.NUMBER_TYPE)) {
             this.explosionRadius = Math.max(0.0f, nbt.getFloat(EXPLOSION_RADIUS_KEY));
         }
+        if (nbt.contains(TRIGGER_PAYLOAD_RELEASED_KEY, NbtElement.BYTE_TYPE)) {
+            this.triggerPayloadReleased = nbt.getBoolean(TRIGGER_PAYLOAD_RELEASED_KEY);
+        }
+        this.triggerPayloads = NoitaProjectilePayload.fromNbtList(nbt.getList(TRIGGER_PAYLOADS_KEY, NbtElement.COMPOUND_TYPE));
+    }
+
+    private void releaseTriggerPayload() {
+        if (this.triggerPayloadReleased || this.triggerPayloads.isEmpty()) {
+            return;
+        }
+        this.triggerPayloadReleased = true;
+        Vec3d direction = getPayloadDirection();
+        for (NoitaProjectilePayload payload : this.triggerPayloads) {
+            spawnPayloadProjectile(payload, direction);
+        }
+    }
+
+    private Vec3d getPayloadDirection() {
+        Vec3d velocity = this.getVelocity();
+        if (velocity.lengthSquared() > 1.0E-6) {
+            return velocity.normalize();
+        }
+        return this.caster == null ? this.getRotationVec(1.0f) : this.caster.getRotationVec(1.0f);
+    }
+
+    private void spawnPayloadProjectile(NoitaProjectilePayload payload, Vec3d direction) {
+        World world = this.getWorld();
+        if (payload.kind() == NoitaProjectilePayload.ProjectileKind.BOMB) {
+            BombEntity bomb = new BombEntity(world, this.caster, payload.explosionRadius(), payload.lifetimeTicks(), payload.payloads());
+            bomb.setPosition(this.getX(), this.getY(), this.getZ());
+            bomb.setVelocity(direction.multiply(payload.speed()));
+            world.spawnEntity(bomb);
+            return;
+        }
+
+        SparkBoltProjectileEntity sparkBolt = new SparkBoltProjectileEntity(
+            world,
+            this.caster,
+            payload.damage(),
+            payload.criticalChancePercent(),
+            payload.lifetimeTicks(),
+            payload.trailLightStacks(),
+            payload.triggerMode(),
+            payload.triggerDelayTicks(),
+            payload.payloads()
+        );
+        sparkBolt.setPosition(this.getX(), this.getY(), this.getZ());
+        sparkBolt.setVelocity(direction.x, direction.y, direction.z, payload.speed(), payload.divergence());
+        world.spawnEntity(sparkBolt);
     }
 }

@@ -5,11 +5,14 @@ import com.mcnoita.entity.SparkBoltProjectileEntity;
 import com.mcnoita.item.ModItems;
 import com.mcnoita.item.NoitaSpellItem;
 import com.mcnoita.item.NoitaWandItem;
+import com.mcnoita.spell.NoitaProjectilePayload;
 import com.mcnoita.spell.NoitaSpellTemplate;
+import com.mcnoita.spell.NoitaSpellTriggerMode;
 import com.mcnoita.spell.NoitaSpellType;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
@@ -28,6 +31,7 @@ import net.minecraft.util.math.Vec3d;
 public final class NoitaWandCaster {
     private static final String CAST_STATE_KEY = "NoitaWandCastState";
     private static final String DECK_KEY = "Deck";
+    private static final String DISCARDED_KEY = "Discarded";
     private static final String SPELLS_HASH_KEY = "SpellsHash";
     private static final String DRAW_INDEX_KEY = "DrawIndex";
     private static final String CAST_DELAY_START_TICK_KEY = "CastDelayStartTick";
@@ -62,19 +66,17 @@ public final class NoitaWandCaster {
         float currentMana = updateMana(state, now, wandTemplate);
         DefaultedList<ItemStack> configuredSpells = NoitaWandItem.getSpellStacks(wandStack, wandTemplate.capacity());
         List<Integer> spellSlots = getConfiguredSpellSlots(configuredSpells);
-        if (spellSlots.isEmpty()) {
-            resetTiming(state);
-            writeDeck(state, List.of());
-            state.putInt(DRAW_INDEX_KEY, 0);
-            state.putInt(SPELLS_HASH_KEY, 0);
+        List<ItemStack> alwaysCastSpells = getAlwaysCastSpellStacks(wandTemplate);
+        if (spellSlots.isEmpty() && alwaysCastSpells.isEmpty()) {
+            resetEmptyState(state);
             return;
         }
 
-        int spellsHash = getSpellsHash(configuredSpells);
-        if (state.getInt(SPELLS_HASH_KEY) != spellsHash) {
-            resetTiming(state);
+        int spellsHash = getSpellsHash(configuredSpells, wandTemplate);
+        if (state.getInt(SPELLS_HASH_KEY) != spellsHash || state.contains(DRAW_INDEX_KEY, NbtElement.NUMBER_TYPE)) {
             resetDeck(state, spellSlots, wandTemplate.shuffle(), player.getRandom().nextLong(), spellsHash);
-        } else if (readDeck(state).isEmpty()) {
+            resetTiming(state);
+        } else if (readDeck(state).isEmpty() && readDiscarded(state).isEmpty() && !spellSlots.isEmpty()) {
             resetDeck(state, spellSlots, wandTemplate.shuffle(), player.getRandom().nextLong(), spellsHash);
         }
 
@@ -90,65 +92,42 @@ public final class NoitaWandCaster {
             return;
         }
 
-        int drawIndexBefore = state.getInt(DRAW_INDEX_KEY);
-        CastBlock castBlock = drawCastBlock(state, configuredSpells, wandTemplate);
-        if (castBlock.spells().isEmpty()) {
-            startRecharge(state, now, wandTemplate);
-            return;
+        CastContext context = new CastContext(
+            player,
+            wandTemplate,
+            configuredSpells,
+            readDeck(state),
+            readDiscarded(state),
+            currentMana,
+            !spellSlots.isEmpty()
+        );
+        for (ItemStack alwaysCastSpell : alwaysCastSpells) {
+            context.executePermanentSpell(alwaysCastSpell);
         }
+        context.drawActions(wandTemplate.spellsPerCast(), false);
+        context.moveHandToDiscarded();
 
-        int manaDrain = getCastManaDrain(castBlock);
-        if (manaDrain > 0 && currentMana < manaDrain) {
-            state.putInt(DRAW_INDEX_KEY, drawIndexBefore);
-            return;
-        }
-        spendMana(state, now, wandTemplate, currentMana, manaDrain);
+        writeDeck(state, context.deck());
+        writeDiscarded(state, context.discarded());
+        writeMana(state, now, wandTemplate, context.mana());
 
-        boolean castAnySpell = false;
-        float castDelaySeconds = wandTemplate.castDelaySeconds();
-        float rechargeTimeSeconds = 0.0f;
-
-        SpellModifiers modifiers = SpellModifiers.EMPTY;
-        for (ItemStack spellStack : castBlock.spells()) {
-            if (spellStack.getItem() instanceof NoitaSpellItem spellItem) {
-                if (!NoitaSpellItem.hasUsesRemaining(spellStack)) {
-                    continue;
-                }
-                NoitaSpellTemplate spellTemplate = spellItem.getTemplate();
-                if (spellTemplate.type() == NoitaSpellType.PROJECTILE_MODIFIER) {
-                    modifiers = modifiers.add(spellTemplate);
-                    continue;
-                }
-
-                if (isProjectileSpell(spellStack)) {
-                    NoitaSpellTemplate modifiedTemplate = modifiers.applyTo(spellTemplate);
-                    if (spellStack.isOf(ModItems.BOMB)) {
-                        spawnBomb(player, wandTemplate, modifiedTemplate);
-                    } else {
-                        spawnSparkBolt(player, wandTemplate, modifiedTemplate);
-                    }
-                    castDelaySeconds += modifiedTemplate.castDelaySeconds();
-                    rechargeTimeSeconds += modifiedTemplate.rechargeTimeSeconds();
-                    modifiers = SpellModifiers.EMPTY;
-                    castAnySpell = true;
-                }
-            }
-        }
-
-        if (!castAnySpell) {
+        if (!context.castAnySpell()) {
             startCastDelay(state, now, MIN_CAST_DELAY_TICKS);
-            if (castBlock.deckExhausted()) {
+            if (context.shouldRecharge()) {
                 startRecharge(state, now, wandTemplate);
             }
+            if (context.consumeLimitedUseSpells()) {
+                NoitaWandItem.setSpellStacks(wandStack, configuredSpells);
+            }
             return;
         }
 
-        startCastDelay(state, now, secondsToTicks(castDelaySeconds, MIN_CAST_DELAY_TICKS));
-        if (castBlock.deckExhausted()) {
-            startRecharge(state, now, wandTemplate.rechargeTimeSeconds() + rechargeTimeSeconds);
+        startCastDelay(state, now, secondsToTicks(context.castDelaySeconds(), MIN_CAST_DELAY_TICKS));
+        if (context.shouldRecharge()) {
+            startRecharge(state, now, wandTemplate.rechargeTimeSeconds() + context.rechargeTimeSeconds());
         }
 
-        if (consumeLimitedUseSpells(configuredSpells, castBlock.usedSlots())) {
+        if (context.consumeLimitedUseSpells()) {
             NoitaWandItem.setSpellStacks(wandStack, configuredSpells);
         }
     }
@@ -179,39 +158,12 @@ public final class NoitaWandCaster {
         return CastHudState.idle(currentMana, manaMax);
     }
 
-    private static CastBlock drawCastBlock(NbtCompound state, DefaultedList<ItemStack> configuredSpells, NoitaWandTemplate wandTemplate) {
-        List<Integer> deck = readDeck(state);
-        int drawIndex = state.getInt(DRAW_INDEX_KEY);
-        List<ItemStack> spells = new ArrayList<>();
-        List<Integer> usedSlots = new ArrayList<>();
-
-        int projectileDraws = 0;
-        while (projectileDraws < wandTemplate.spellsPerCast()) {
-            if (drawIndex >= deck.size()) {
-                break;
-            }
-
-            int spellSlot = deck.get(drawIndex);
-            drawIndex++;
-            if (spellSlot >= 0 && spellSlot < configuredSpells.size()) {
-                ItemStack spellStack = configuredSpells.get(spellSlot);
-                if (!spellStack.isEmpty()) {
-                    if (!NoitaSpellItem.hasUsesRemaining(spellStack)) {
-                        continue;
-                    }
-                    spells.add(spellStack.copy());
-                    usedSlots.add(spellSlot);
-                    if (!isProjectileModifier(spellStack)) {
-                        projectileDraws++;
-                    }
-                }
-            }
-        }
-
-        state.putInt(DRAW_INDEX_KEY, drawIndex);
-        boolean deckExhausted = drawIndex >= deck.size();
-
-        return new CastBlock(spells, usedSlots, deckExhausted);
+    private static void resetEmptyState(NbtCompound state) {
+        resetTiming(state);
+        writeDeck(state, List.of());
+        writeDiscarded(state, List.of());
+        state.putInt(SPELLS_HASH_KEY, 0);
+        state.remove(DRAW_INDEX_KEY);
     }
 
     private static void startRecharge(NbtCompound state, long now, NoitaWandTemplate wandTemplate) {
@@ -231,13 +183,12 @@ public final class NoitaWandCaster {
 
     private static void resetDeck(NbtCompound state, List<Integer> spellSlots, boolean shuffle, long randomSeed, int spellsHash) {
         List<Integer> deck = new ArrayList<>(spellSlots);
-        if (shuffle) {
-            Collections.shuffle(deck, new java.util.Random(randomSeed));
-        }
+        orderDeck(deck, shuffle, randomSeed);
 
         writeDeck(state, deck);
-        state.putInt(DRAW_INDEX_KEY, 0);
+        writeDiscarded(state, List.of());
         state.putInt(SPELLS_HASH_KEY, spellsHash);
+        state.remove(DRAW_INDEX_KEY);
     }
 
     private static void resetTiming(NbtCompound state) {
@@ -281,12 +232,8 @@ public final class NoitaWandCaster {
         return currentMana;
     }
 
-    private static void spendMana(NbtCompound state, long now, NoitaWandTemplate wandTemplate, float currentMana, int manaDrain) {
-        if (manaDrain == 0) {
-            return;
-        }
-
-        state.putFloat(CURRENT_MANA_KEY, clampMana(currentMana - manaDrain, wandTemplate.manaMax()));
+    private static void writeMana(NbtCompound state, long now, NoitaWandTemplate wandTemplate, float mana) {
+        state.putFloat(CURRENT_MANA_KEY, clampMana(mana, wandTemplate.manaMax()));
         state.putLong(LAST_MANA_TICK_KEY, now);
     }
 
@@ -298,7 +245,7 @@ public final class NoitaWandCaster {
         List<Integer> slots = new ArrayList<>();
         for (int slot = 0; slot < configuredSpells.size(); slot++) {
             ItemStack spellStack = configuredSpells.get(slot);
-            if (!spellStack.isEmpty() && spellStack.getItem() instanceof NoitaSpellItem) {
+            if (!spellStack.isEmpty() && spellStack.getItem() instanceof NoitaSpellItem && NoitaSpellItem.hasUsesRemaining(spellStack)) {
                 slots.add(slot);
             }
         }
@@ -306,7 +253,18 @@ public final class NoitaWandCaster {
         return slots;
     }
 
-    private static int getSpellsHash(DefaultedList<ItemStack> configuredSpells) {
+    private static List<ItemStack> getAlwaysCastSpellStacks(NoitaWandTemplate wandTemplate) {
+        List<ItemStack> spellStacks = new ArrayList<>();
+        for (Identifier spellId : wandTemplate.alwaysCastSpells()) {
+            Item item = Registries.ITEM.get(spellId);
+            if (item instanceof NoitaSpellItem) {
+                spellStacks.add(new ItemStack(item));
+            }
+        }
+        return spellStacks;
+    }
+
+    private static int getSpellsHash(DefaultedList<ItemStack> configuredSpells, NoitaWandTemplate wandTemplate) {
         int hash = 1;
         for (int i = 0; i < configuredSpells.size(); i++) {
             ItemStack spellStack = configuredSpells.get(i);
@@ -315,40 +273,58 @@ public final class NoitaWandCaster {
             hash = 31 * hash + (spellStack.isEmpty() ? 0 : id.hashCode());
             hash = 31 * hash + spellStack.getCount();
         }
-
+        hash = 31 * hash + wandTemplate.alwaysCastSpells().hashCode();
         return hash;
     }
 
     private static List<Integer> readDeck(NbtCompound state) {
-        NbtList nbtDeck = state.getList(DECK_KEY, NbtElement.INT_TYPE);
-        List<Integer> deck = new ArrayList<>(nbtDeck.size());
-        for (int i = 0; i < nbtDeck.size(); i++) {
-            deck.add(nbtDeck.getInt(i));
+        return readIntList(state, DECK_KEY);
+    }
+
+    private static List<Integer> readDiscarded(NbtCompound state) {
+        return readIntList(state, DISCARDED_KEY);
+    }
+
+    private static List<Integer> readIntList(NbtCompound state, String key) {
+        NbtList nbtList = state.getList(key, NbtElement.INT_TYPE);
+        List<Integer> values = new ArrayList<>(nbtList.size());
+        for (int i = 0; i < nbtList.size(); i++) {
+            values.add(nbtList.getInt(i));
         }
 
-        return deck;
+        return values;
     }
 
     private static void writeDeck(NbtCompound state, List<Integer> deck) {
-        NbtList nbtDeck = new NbtList();
-        for (int slot : deck) {
-            nbtDeck.add(NbtInt.of(slot));
-        }
-        state.put(DECK_KEY, nbtDeck);
+        writeIntList(state, DECK_KEY, deck);
     }
 
-    private static int getCastManaDrain(CastBlock castBlock) {
-        int manaDrain = 0;
-        for (ItemStack spellStack : castBlock.spells()) {
-            if (spellStack.getItem() instanceof NoitaSpellItem spellItem) {
-                manaDrain += spellItem.getTemplate().manaDrain();
-            }
-        }
-
-        return manaDrain;
+    private static void writeDiscarded(NbtCompound state, List<Integer> discarded) {
+        writeIntList(state, DISCARDED_KEY, discarded);
     }
 
-    private static void spawnSparkBolt(ServerPlayerEntity player, NoitaWandTemplate wandTemplate, NoitaSpellTemplate spellTemplate) {
+    private static void writeIntList(NbtCompound state, String key, List<Integer> values) {
+        NbtList nbtList = new NbtList();
+        for (int value : values) {
+            nbtList.add(NbtInt.of(value));
+        }
+        state.put(key, nbtList);
+    }
+
+    private static void orderDeck(List<Integer> deck, boolean shuffle, long randomSeed) {
+        if (shuffle) {
+            Collections.shuffle(deck, new java.util.Random(randomSeed));
+        } else {
+            Collections.sort(deck);
+        }
+    }
+
+    private static void spawnSparkBolt(
+        ServerPlayerEntity player,
+        NoitaWandTemplate wandTemplate,
+        NoitaSpellTemplate spellTemplate,
+        List<NoitaProjectilePayload> triggerPayloads
+    ) {
         ServerWorld world = player.getServerWorld();
         SparkBoltProjectileEntity sparkBolt = new SparkBoltProjectileEntity(
             world,
@@ -356,7 +332,10 @@ public final class NoitaWandCaster {
             spellTemplate.damage(),
             spellTemplate.criticalChancePercent(),
             spellTemplate.lifetimeTicks(),
-            spellTemplate.trailLightStacks()
+            spellTemplate.trailLightStacks(),
+            spellTemplate.triggerMode(),
+            spellTemplate.triggerDelayTicks(),
+            triggerPayloads
         );
         Vec3d spawnPosition = getSpellSpawnPosition(player);
         Vec3d direction = player.getRotationVec(1.0f);
@@ -373,13 +352,19 @@ public final class NoitaWandCaster {
         world.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.ENTITY_ARROW_SHOOT, SoundCategory.PLAYERS, 0.6f, 1.35f);
     }
 
-    private static void spawnBomb(ServerPlayerEntity player, NoitaWandTemplate wandTemplate, NoitaSpellTemplate spellTemplate) {
+    private static void spawnBomb(
+        ServerPlayerEntity player,
+        NoitaWandTemplate wandTemplate,
+        NoitaSpellTemplate spellTemplate,
+        List<NoitaProjectilePayload> triggerPayloads
+    ) {
         ServerWorld world = player.getServerWorld();
         BombEntity bomb = new BombEntity(
             world,
             player,
             spellTemplate.explosionRadius(),
-            spellTemplate.lifetimeTicks()
+            spellTemplate.lifetimeTicks(),
+            triggerPayloads
         );
         Vec3d spawnPosition = getSpellSpawnPosition(player);
         Vec3d direction = player.getRotationVec(1.0f);
@@ -416,70 +401,466 @@ public final class NoitaWandCaster {
     }
 
     private static boolean isProjectileSpell(ItemStack spellStack) {
-        return spellStack.isOf(ModItems.SPARK_BOLT) || spellStack.isOf(ModItems.BOUNCING_BURST) || spellStack.isOf(ModItems.LIGHT_BULLET) || spellStack.isOf(ModItems.BOMB);
+        return spellStack.isOf(ModItems.SPARK_BOLT)
+            || spellStack.isOf(ModItems.SPARK_BOLT_TRIGGER)
+            || spellStack.isOf(ModItems.SPARK_BOLT_TIMER)
+            || spellStack.isOf(ModItems.BOUNCING_BURST)
+            || spellStack.isOf(ModItems.LIGHT_BULLET)
+            || spellStack.isOf(ModItems.BOMB)
+            || spellStack.isOf(ModItems.BOMB_DEATH_TRIGGER);
     }
 
-    private static boolean isProjectileModifier(ItemStack spellStack) {
-        return spellStack.getItem() instanceof NoitaSpellItem spellItem && spellItem.getTemplate().type() == NoitaSpellType.PROJECTILE_MODIFIER;
-    }
-
-    private static boolean consumeLimitedUseSpells(DefaultedList<ItemStack> configuredSpells, List<Integer> usedSlots) {
-        boolean consumedAny = false;
-        for (int slot : usedSlots) {
-            if (slot >= 0 && slot < configuredSpells.size()) {
-                ItemStack spellStack = configuredSpells.get(slot);
-                int remainingBefore = NoitaSpellItem.getRemainingUses(spellStack);
-                NoitaSpellItem.consumeUse(spellStack);
-                consumedAny |= NoitaSpellItem.getRemainingUses(spellStack) != remainingBefore;
-            }
-        }
-        return consumedAny;
+    private static boolean isBombSpell(ItemStack spellStack) {
+        return spellStack.isOf(ModItems.BOMB) || spellStack.isOf(ModItems.BOMB_DEATH_TRIGGER);
     }
 
     private static int secondsToTicks(float seconds, int minimumTicks) {
         return Math.max(minimumTicks, Math.round(Math.max(0.0f, seconds) * 20.0f));
     }
 
-    private record CastBlock(List<ItemStack> spells, List<Integer> usedSlots, boolean deckExhausted) {
+    private static final class CastContext {
+        private final ServerPlayerEntity player;
+        private final NoitaWandTemplate wandTemplate;
+        private final DefaultedList<ItemStack> configuredSpells;
+        private final List<Integer> deck;
+        private final List<Integer> discarded;
+        private final List<Integer> hand = new ArrayList<>();
+        private final List<Integer> slotsToConsume = new ArrayList<>();
+        private final boolean hasRegularDeck;
+
+        private CastState castState = CastState.EMPTY;
+        private float mana;
+        private float castDelaySeconds;
+        private float rechargeTimeSeconds;
+        private boolean castAnySpell;
+        private boolean reloading;
+        private boolean startReload;
+        private int permanentCardDepth;
+        private int copiedActionDepth;
+        private List<NoitaProjectilePayload> payloadSink;
+
+        private CastContext(
+            ServerPlayerEntity player,
+            NoitaWandTemplate wandTemplate,
+            DefaultedList<ItemStack> configuredSpells,
+            List<Integer> deck,
+            List<Integer> discarded,
+            float mana,
+            boolean hasRegularDeck
+        ) {
+            this.player = player;
+            this.wandTemplate = wandTemplate;
+            this.configuredSpells = configuredSpells;
+            this.deck = new ArrayList<>(deck);
+            this.discarded = new ArrayList<>(discarded);
+            this.mana = mana;
+            this.hasRegularDeck = hasRegularDeck;
+            this.castDelaySeconds = wandTemplate.castDelaySeconds();
+        }
+
+        private void executePermanentSpell(ItemStack spellStack) {
+            permanentCardDepth++;
+            executeSpell(spellStack, -1, true);
+            permanentCardDepth--;
+        }
+
+        private void drawActions(int howMany, boolean instantReloadIfEmpty) {
+            if (permanentCardDepth > 0 && howMany == 1) {
+                return;
+            }
+
+            for (int i = 0; i < howMany; i++) {
+                boolean ok = drawAction(instantReloadIfEmpty);
+                if (!ok) {
+                    while (!deck.isEmpty()) {
+                        if (drawAction(instantReloadIfEmpty)) {
+                            break;
+                        }
+                    }
+                }
+
+                if (reloading) {
+                    return;
+                }
+            }
+        }
+
+        private boolean drawAction(boolean instantReloadIfEmpty) {
+            if (deck.isEmpty()) {
+                if (instantReloadIfEmpty && !discarded.isEmpty()) {
+                    deck.addAll(discarded);
+                    discarded.clear();
+                    orderDeck(deck, wandTemplate.shuffle(), player.getRandom().nextLong());
+                    startReload = true;
+                } else {
+                    reloading = true;
+                    return true;
+                }
+            }
+
+            if (deck.isEmpty()) {
+                return true;
+            }
+
+            int slot = deck.remove(0);
+            if (slot < 0 || slot >= configuredSpells.size()) {
+                return false;
+            }
+
+            ItemStack spellStack = configuredSpells.get(slot);
+            if (spellStack.isEmpty() || !(spellStack.getItem() instanceof NoitaSpellItem spellItem)) {
+                return false;
+            }
+            if (!NoitaSpellItem.hasUsesRemaining(spellStack)) {
+                discarded.add(slot);
+                return false;
+            }
+
+            NoitaSpellTemplate template = spellItem.getTemplate();
+            int manaRequired = template.manaDrain();
+            if (manaRequired > mana) {
+                discarded.add(slot);
+                return false;
+            }
+
+            mana -= manaRequired;
+            hand.add(slot);
+            executeSpell(spellStack.copy(), slot, false);
+            return true;
+        }
+
+        private void executeSpell(ItemStack spellStack, int slot, boolean permanent) {
+            if (!(spellStack.getItem() instanceof NoitaSpellItem spellItem)) {
+                return;
+            }
+
+            NoitaSpellTemplate template = spellItem.getTemplate();
+            if (template.type() == NoitaSpellType.PROJECTILE_MODIFIER) {
+                if (permanent) {
+                    castState = castState.add(template);
+                    drawActions(1, true);
+                    return;
+                }
+
+                CastState previousState = castState;
+                castState = castState.add(template);
+                drawActions(1, true);
+                castState = previousState;
+                return;
+            }
+
+            if (template.type() == NoitaSpellType.MULTICAST) {
+                drawActions(template.drawCount(), true);
+                return;
+            }
+
+            if (spellStack.isOf(ModItems.DUPLICATE)) {
+                duplicateCurrentHand(template);
+                return;
+            }
+
+            if (spellStack.isOf(ModItems.ALPHA)) {
+                copyFirstAvailableSpell(template);
+                return;
+            }
+
+            if (spellStack.isOf(ModItems.GAMMA)) {
+                copyLastAvailableSpell(template);
+                return;
+            }
+
+            if (spellStack.isOf(ModItems.WAND_REFRESH)) {
+                refreshWand(template);
+                return;
+            }
+
+            if (!isProjectileSpell(spellStack)) {
+                return;
+            }
+
+            NoitaSpellTemplate resolvedTemplate = castState.applyTo(template);
+            List<NoitaProjectilePayload> triggerPayloads = resolveTriggerPayload(resolvedTemplate);
+            if (payloadSink != null) {
+                payloadSink.add(toPayload(spellStack, resolvedTemplate, triggerPayloads));
+                if (slot >= 0) {
+                    slotsToConsume.add(slot);
+                }
+                return;
+            }
+
+            if (isBombSpell(spellStack)) {
+                spawnBomb(player, wandTemplate, resolvedTemplate, triggerPayloads);
+            } else {
+                spawnSparkBolt(player, wandTemplate, resolvedTemplate, triggerPayloads);
+            }
+
+            castDelaySeconds += resolvedTemplate.castDelaySeconds();
+            rechargeTimeSeconds += resolvedTemplate.rechargeTimeSeconds();
+            castAnySpell = true;
+            if (slot >= 0) {
+                slotsToConsume.add(slot);
+            }
+        }
+
+        private List<NoitaProjectilePayload> resolveTriggerPayload(NoitaSpellTemplate template) {
+            if (template.triggerMode() == NoitaSpellTriggerMode.NONE || template.triggerDrawCount() <= 0) {
+                return List.of();
+            }
+
+            CastState previousCastState = castState;
+            List<NoitaProjectilePayload> previousPayloadSink = payloadSink;
+            float previousCastDelaySeconds = castDelaySeconds;
+            float previousRechargeTimeSeconds = rechargeTimeSeconds;
+            boolean previousCastAnySpell = castAnySpell;
+            boolean previousReloading = reloading;
+
+            List<NoitaProjectilePayload> payloads = new ArrayList<>();
+            castState = CastState.EMPTY;
+            payloadSink = payloads;
+            drawActions(template.triggerDrawCount(), true);
+
+            castState = previousCastState;
+            payloadSink = previousPayloadSink;
+            castDelaySeconds = previousCastDelaySeconds;
+            rechargeTimeSeconds = previousRechargeTimeSeconds;
+            castAnySpell = previousCastAnySpell;
+            reloading = previousReloading;
+            return List.copyOf(payloads);
+        }
+
+        private void duplicateCurrentHand(NoitaSpellTemplate template) {
+            List<Integer> handSnapshot = List.copyOf(hand);
+            for (int slot : handSnapshot) {
+                if (!isCopyableSlot(slot) || configuredSpells.get(slot).isOf(ModItems.DUPLICATE)) {
+                    continue;
+                }
+                copySpell(slot);
+            }
+
+            castDelaySeconds += template.castDelaySeconds();
+            rechargeTimeSeconds += template.rechargeTimeSeconds();
+            drawActions(1, true);
+        }
+
+        private void copyFirstAvailableSpell(NoitaSpellTemplate template) {
+            castDelaySeconds += template.castDelaySeconds();
+            copySpell(findFirstCopyTarget());
+        }
+
+        private void copyLastAvailableSpell(NoitaSpellTemplate template) {
+            castDelaySeconds += template.castDelaySeconds();
+            copySpell(findLastCopyTarget());
+        }
+
+        private int findFirstCopyTarget() {
+            for (int slot : discarded) {
+                if (isCopyableSlot(slot)) {
+                    return slot;
+                }
+            }
+            for (int slot : hand) {
+                if (isCopyableSlot(slot)) {
+                    return slot;
+                }
+            }
+            for (int slot : deck) {
+                if (isCopyableSlot(slot)) {
+                    return slot;
+                }
+            }
+            return -1;
+        }
+
+        private int findLastCopyTarget() {
+            for (int i = deck.size() - 1; i >= 0; i--) {
+                int slot = deck.get(i);
+                if (isCopyableSlot(slot)) {
+                    return slot;
+                }
+            }
+            for (int i = hand.size() - 1; i >= 0; i--) {
+                int slot = hand.get(i);
+                if (isCopyableSlot(slot)) {
+                    return slot;
+                }
+            }
+            return -1;
+        }
+
+        private boolean isCopyableSlot(int slot) {
+            return slot >= 0
+                && slot < configuredSpells.size()
+                && !configuredSpells.get(slot).isEmpty()
+                && configuredSpells.get(slot).getItem() instanceof NoitaSpellItem;
+        }
+
+        private void copySpell(int slot) {
+            if (!isCopyableSlot(slot) || copiedActionDepth >= 2) {
+                return;
+            }
+
+            copiedActionDepth++;
+            executeSpell(configuredSpells.get(slot).copy(), -1, false);
+            copiedActionDepth--;
+        }
+
+        private void refreshWand(NoitaSpellTemplate template) {
+            rechargeTimeSeconds += template.rechargeTimeSeconds();
+            addSlotsToDiscarded(hand);
+            addSlotsToDiscarded(deck);
+            hand.clear();
+            deck.clear();
+
+            if (!discarded.isEmpty()) {
+                deck.addAll(discarded);
+                discarded.clear();
+                orderDeck(deck, wandTemplate.shuffle(), player.getRandom().nextLong());
+            }
+            reloading = false;
+        }
+
+        private void addSlotsToDiscarded(List<Integer> slots) {
+            for (int slot : slots) {
+                if (slot >= 0 && slot < configuredSpells.size() && !discarded.contains(slot) && NoitaSpellItem.hasUsesRemaining(configuredSpells.get(slot))) {
+                    discarded.add(slot);
+                }
+            }
+        }
+
+        private NoitaProjectilePayload toPayload(ItemStack spellStack, NoitaSpellTemplate template, List<NoitaProjectilePayload> triggerPayloads) {
+            return new NoitaProjectilePayload(
+                isBombSpell(spellStack) ? NoitaProjectilePayload.ProjectileKind.BOMB : NoitaProjectilePayload.ProjectileKind.SPARK_BOLT,
+                template.damage(),
+                template.criticalChancePercent(),
+                template.lifetimeTicks(),
+                template.trailLightStacks(),
+                template.explosionRadius(),
+                getArrowSpeed(wandTemplate, template),
+                getDivergence(wandTemplate, template),
+                template.triggerMode(),
+                template.triggerDelayTicks(),
+                triggerPayloads
+            );
+        }
+
+        private void moveHandToDiscarded() {
+            for (int slot : hand) {
+                if (slot >= 0 && slot < configuredSpells.size() && NoitaSpellItem.hasUsesRemaining(configuredSpells.get(slot))) {
+                    discarded.add(slot);
+                }
+            }
+            hand.clear();
+        }
+
+        private boolean consumeLimitedUseSpells() {
+            if (!castAnySpell) {
+                return false;
+            }
+
+            boolean consumedAny = false;
+            for (int slot : slotsToConsume) {
+                if (slot >= 0 && slot < configuredSpells.size()) {
+                    ItemStack spellStack = configuredSpells.get(slot);
+                    int remainingBefore = NoitaSpellItem.getRemainingUses(spellStack);
+                    NoitaSpellItem.consumeUse(spellStack);
+                    consumedAny |= NoitaSpellItem.getRemainingUses(spellStack) != remainingBefore;
+                }
+            }
+            return consumedAny;
+        }
+
+        private List<Integer> deck() {
+            return deck;
+        }
+
+        private List<Integer> discarded() {
+            return discarded;
+        }
+
+        private float mana() {
+            return mana;
+        }
+
+        private float castDelaySeconds() {
+            return castDelaySeconds;
+        }
+
+        private float rechargeTimeSeconds() {
+            return rechargeTimeSeconds;
+        }
+
+        private boolean castAnySpell() {
+            return castAnySpell;
+        }
+
+        private boolean shouldRecharge() {
+            return hasRegularDeck && (startReload || deck.isEmpty());
+        }
     }
 
-    private record SpellModifiers(int trailLightStacks, float castDelaySeconds, float rechargeTimeSeconds, float spreadModifierDegrees) {
-        private static final SpellModifiers EMPTY = new SpellModifiers(0, 0.0f, 0.0f, 0.0f);
+    private record CastState(
+        float damage,
+        float explosionRadius,
+        float spreadModifierDegrees,
+        float speedMultiplier,
+        float castDelaySeconds,
+        float rechargeTimeSeconds,
+        float criticalChancePercent,
+        int lifetimeModifierTicks,
+        float recoil,
+        boolean piercing,
+        boolean friendlyFire,
+        int trailLightStacks
+    ) {
+        private static final CastState EMPTY = new CastState(0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0, 0.0f, false, false, 0);
 
-        private SpellModifiers add(NoitaSpellTemplate modifier) {
-            return new SpellModifiers(
-                this.trailLightStacks + modifier.trailLightStacks(),
-                this.castDelaySeconds + modifier.castDelaySeconds(),
-                this.rechargeTimeSeconds + modifier.rechargeTimeSeconds(),
-                this.spreadModifierDegrees + modifier.spreadModifierDegrees()
+        private CastState add(NoitaSpellTemplate modifier) {
+            return new CastState(
+                damage + modifier.damage(),
+                explosionRadius + modifier.explosionRadius(),
+                spreadModifierDegrees + modifier.spreadDegrees() + modifier.spreadModifierDegrees(),
+                speedMultiplier * modifier.speedMultiplier(),
+                castDelaySeconds + modifier.castDelaySeconds(),
+                rechargeTimeSeconds + modifier.rechargeTimeSeconds(),
+                criticalChancePercent + modifier.criticalChancePercent(),
+                lifetimeModifierTicks + modifier.lifetimeModifierTicks(),
+                recoil + modifier.recoil(),
+                piercing || modifier.piercing(),
+                friendlyFire || modifier.friendlyFire(),
+                trailLightStacks + modifier.trailLightStacks()
             );
         }
 
         private NoitaSpellTemplate applyTo(NoitaSpellTemplate projectile) {
-            if (this.equals(EMPTY)) {
-                return projectile;
+            int lifetimeTicks = Math.max(1, projectile.lifetimeTicks() + lifetimeModifierTicks);
+            if (projectile.maxLifetimeTicks() > 0) {
+                lifetimeTicks = Math.min(lifetimeTicks, projectile.maxLifetimeTicks());
             }
 
             return NoitaSpellTemplate.builder()
                 .type(projectile.type())
                 .maxUses(projectile.maxUses())
                 .manaDrain(projectile.manaDrain())
-                .damage(projectile.damage())
-                .explosionRadius(projectile.explosionRadius())
+                .damage(Math.max(0.0f, projectile.damage() + damage))
+                .explosionRadius(Math.max(0.0f, projectile.explosionRadius() + explosionRadius))
                 .spreadDegrees(projectile.spreadDegrees())
                 .speed(projectile.speed())
-                .castDelaySeconds(projectile.castDelaySeconds() + this.castDelaySeconds)
-                .rechargeTimeSeconds(projectile.rechargeTimeSeconds() + this.rechargeTimeSeconds)
-                .spreadModifierDegrees(projectile.spreadModifierDegrees() + this.spreadModifierDegrees)
-                .speedMultiplier(projectile.speedMultiplier())
-                .criticalChancePercent(projectile.criticalChancePercent())
-                .lifetimeTicks(projectile.lifetimeTicks())
+                .castDelaySeconds(projectile.castDelaySeconds() + castDelaySeconds)
+                .rechargeTimeSeconds(projectile.rechargeTimeSeconds() + rechargeTimeSeconds)
+                .spreadModifierDegrees(projectile.spreadModifierDegrees() + spreadModifierDegrees)
+                .speedMultiplier(projectile.speedMultiplier() * speedMultiplier)
+                .criticalChancePercent(projectile.criticalChancePercent() + criticalChancePercent)
+                .lifetimeTicks(lifetimeTicks)
                 .maxLifetimeTicks(projectile.maxLifetimeTicks())
-                .lifetimeModifierTicks(projectile.lifetimeModifierTicks())
-                .recoil(projectile.recoil())
-                .piercing(projectile.piercing())
-                .friendlyFire(projectile.friendlyFire())
-                .trailLightStacks(projectile.trailLightStacks() + this.trailLightStacks)
+                .lifetimeModifierTicks(projectile.lifetimeModifierTicks() + lifetimeModifierTicks)
+                .recoil(projectile.recoil() + recoil)
+                .piercing(projectile.piercing() || piercing)
+                .friendlyFire(projectile.friendlyFire() || friendlyFire)
+                .trailLightStacks(projectile.trailLightStacks() + trailLightStacks)
+                .drawCount(projectile.drawCount())
+                .triggerMode(projectile.triggerMode())
+                .triggerDrawCount(projectile.triggerDrawCount())
+                .triggerDelayTicks(projectile.triggerDelayTicks())
                 .build();
         }
     }

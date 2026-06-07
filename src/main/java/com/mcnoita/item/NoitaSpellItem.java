@@ -75,6 +75,17 @@ public class NoitaSpellItem extends Item {
         addNonZero(tooltip, "tooltip.mc-noita.spell.spread_degrees", template.spreadDegrees(), Formatting.GRAY);
         addPositive(tooltip, "tooltip.mc-noita.spell.speed", template.speed(), Formatting.GRAY);
         addPositive(tooltip, "tooltip.mc-noita.spell.trail_light", template.trailLightStacks(), Formatting.YELLOW);
+        if (template.type() == com.mcnoita.spell.NoitaSpellType.MULTICAST && template.drawCount() > 0) {
+            tooltip.add(Text.translatable("tooltip.mc-noita.spell.draw_count", template.drawCount()).formatted(Formatting.LIGHT_PURPLE));
+        }
+        if (template.triggerMode() != com.mcnoita.spell.NoitaSpellTriggerMode.NONE && template.triggerDrawCount() > 0) {
+            tooltip.add(Text.translatable(
+                "tooltip.mc-noita.spell.trigger",
+                Text.translatable("spell_trigger.mc-noita." + template.triggerMode().name().toLowerCase(java.util.Locale.ROOT)),
+                template.triggerDrawCount()
+            ).formatted(Formatting.LIGHT_PURPLE));
+            addPositive(tooltip, "tooltip.mc-noita.spell.trigger_delay", template.triggerDelayTicks(), Formatting.GRAY);
+        }
         addNonZero(tooltip, "tooltip.mc-noita.spell.cast_delay", template.castDelaySeconds(), Formatting.GRAY);
         addNonZero(tooltip, "tooltip.mc-noita.spell.recharge_time", template.rechargeTimeSeconds(), Formatting.GRAY);
         addNonZero(tooltip, "tooltip.mc-noita.spell.spread_modifier", template.spreadModifierDegrees(), Formatting.GRAY);
