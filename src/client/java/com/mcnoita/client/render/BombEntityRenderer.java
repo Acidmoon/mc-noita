@@ -1,5 +1,6 @@
 package com.mcnoita.client.render;
 
+import com.mcnoita.MCNoita;
 import com.mcnoita.entity.BombEntity;
 import com.mcnoita.item.ModItems;
 import net.minecraft.client.MinecraftClient;
@@ -10,12 +11,13 @@ import net.minecraft.client.render.entity.EntityRendererFactory;
 import net.minecraft.client.render.item.ItemRenderer;
 import net.minecraft.client.render.model.json.ModelTransformationMode;
 import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.item.Item;
 import net.minecraft.item.ItemStack;
+import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.RotationAxis;
 
 public class BombEntityRenderer extends EntityRenderer<BombEntity> {
-    private static final ItemStack BOMB_STACK = new ItemStack(ModItems.BOMB);
     private final ItemRenderer itemRenderer;
 
     public BombEntityRenderer(EntityRendererFactory.Context context) {
@@ -27,11 +29,12 @@ public class BombEntityRenderer extends EntityRenderer<BombEntity> {
     public void render(BombEntity entity, float yaw, float tickDelta, MatrixStack matrices,
                        VertexConsumerProvider vertexConsumers, int light) {
         matrices.push();
-        matrices.scale(0.75f, 0.75f, 0.75f);
+        float scale = 0.75f * entity.getRenderScale();
+        matrices.scale(scale, scale, scale);
         matrices.multiply(this.dispatcher.getRotation());
         matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(180.0f));
         this.itemRenderer.renderItem(
-            BOMB_STACK,
+            new ItemStack(getVisualItem(entity.getItemPath())),
             ModelTransformationMode.GROUND,
             light,
             OverlayTexture.DEFAULT_UV,
@@ -46,6 +49,11 @@ public class BombEntityRenderer extends EntityRenderer<BombEntity> {
 
     @Override
     public Identifier getTexture(BombEntity entity) {
-        return new Identifier("mc-noita", "textures/item/bomb.png");
+        return MCNoita.id("textures/item/" + entity.getItemPath() + ".png");
+    }
+
+    private static Item getVisualItem(String path) {
+        Item item = Registries.ITEM.get(MCNoita.id(path));
+        return item == net.minecraft.item.Items.AIR ? ModItems.BOMB : item;
     }
 }

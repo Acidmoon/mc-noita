@@ -17,20 +17,17 @@ public final class ModItemGroups {
             .icon(() -> new ItemStack(ModItems.STARTER_WAND))
             .entries((context, entries) -> {
                 entries.add(ModItems.STARTER_WAND);
-                entries.add(ModItems.SPARK_BOLT);
-                entries.add(ModItems.SPARK_BOLT_TRIGGER);
-                entries.add(ModItems.SPARK_BOLT_TIMER);
-                entries.add(ModItems.BOUNCING_BURST);
-                entries.add(ModItems.LIGHT_BULLET);
-                entries.add(ModItems.BOMB);
-                entries.add(ModItems.BOMB_DEATH_TRIGGER);
+                for (NoitaProjectileSpellItem spell : ModItems.PROJECTILE_SPELLS) {
+                    entries.add(spell);
+                }
+                for (NoitaSpellItem spell : ModItems.MODIFIER_SPELLS) {
+                    entries.add(spell);
+                }
                 entries.add(ModItems.DOUBLE_SPELL);
                 entries.add(ModItems.DUPLICATE);
                 entries.add(ModItems.WAND_REFRESH);
                 entries.add(ModItems.ALPHA);
                 entries.add(ModItems.GAMMA);
-                entries.add(ModItems.LIGHT);
-                entries.add(ModItems.ADD_MANA);
             })
             .build()
     );

@@ -1,11 +1,14 @@
 package com.mcnoita.wand;
 
-import com.mcnoita.entity.BombEntity;
 import com.mcnoita.entity.SparkBoltProjectileEntity;
 import com.mcnoita.item.ModItems;
+import com.mcnoita.item.NoitaProjectileSpellItem;
 import com.mcnoita.item.NoitaSpellItem;
 import com.mcnoita.item.NoitaWandItem;
+import com.mcnoita.spell.NoitaModifierEffect;
+import com.mcnoita.spell.NoitaProjectileBehavior;
 import com.mcnoita.spell.NoitaProjectilePayload;
+import com.mcnoita.spell.NoitaProjectileSpellSpec;
 import com.mcnoita.spell.NoitaSpellTemplate;
 import com.mcnoita.spell.NoitaSpellTriggerMode;
 import com.mcnoita.spell.NoitaSpellType;
@@ -49,6 +52,7 @@ public final class NoitaWandCaster {
     private static final double SPELL_SPAWN_FORWARD_OFFSET = 0.65;
     private static final double SPELL_SPAWN_RIGHT_OFFSET = 0.35;
     private static final double SPELL_SPAWN_DOWN_OFFSET = 0.25;
+    private static final float NOITA_GRAVITY_TO_MC_GRAVITY = 12000.0f;
 
     private NoitaWandCaster() {
     }
@@ -319,65 +323,34 @@ public final class NoitaWandCaster {
         }
     }
 
-    private static void spawnSparkBolt(
+    private static void spawnProjectile(
         ServerPlayerEntity player,
         NoitaWandTemplate wandTemplate,
+        NoitaProjectileSpellSpec spellSpec,
         NoitaSpellTemplate spellTemplate,
         List<NoitaProjectilePayload> triggerPayloads
     ) {
         ServerWorld world = player.getServerWorld();
-        SparkBoltProjectileEntity sparkBolt = new SparkBoltProjectileEntity(
-            world,
-            player,
-            spellTemplate.damage(),
-            spellTemplate.criticalChancePercent(),
-            spellTemplate.lifetimeTicks(),
-            spellTemplate.trailLightStacks(),
-            spellTemplate.triggerMode(),
-            spellTemplate.triggerDelayTicks(),
-            triggerPayloads
-        );
         Vec3d spawnPosition = getSpellSpawnPosition(player);
         Vec3d direction = player.getRotationVec(1.0f);
-        sparkBolt.setPosition(spawnPosition);
-        sparkBolt.setVelocity(
-            direction.x,
-            direction.y,
-            direction.z,
-            getArrowSpeed(wandTemplate, spellTemplate),
-            getDivergence(wandTemplate, spellTemplate)
-        );
-
-        world.spawnEntity(sparkBolt);
-        world.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.ENTITY_ARROW_SHOOT, SoundCategory.PLAYERS, 0.6f, 1.35f);
+        NoitaProjectilePayload payload = toPayload(wandTemplate, spellSpec, spellTemplate, triggerPayloads);
+        SparkBoltProjectileEntity.spawnPayloadProjectile(world, player, spawnPosition, direction, payload);
+        applyShooterRecoil(player, direction, spellTemplate.recoil());
+        if (spellSpec.behavior().usesBombEntity() || spellTemplate.explosionRadius() >= 8.0f) {
+            world.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.ENTITY_TNT_PRIMED, SoundCategory.PLAYERS, 0.8f, 1.0f);
+        } else {
+            world.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.ENTITY_ARROW_SHOOT, SoundCategory.PLAYERS, 0.6f, 1.35f);
+        }
     }
 
-    private static void spawnBomb(
-        ServerPlayerEntity player,
-        NoitaWandTemplate wandTemplate,
-        NoitaSpellTemplate spellTemplate,
-        List<NoitaProjectilePayload> triggerPayloads
-    ) {
-        ServerWorld world = player.getServerWorld();
-        BombEntity bomb = new BombEntity(
-            world,
-            player,
-            spellTemplate.explosionRadius(),
-            spellTemplate.lifetimeTicks(),
-            triggerPayloads
-        );
-        Vec3d spawnPosition = getSpellSpawnPosition(player);
-        Vec3d direction = player.getRotationVec(1.0f);
-        bomb.setPosition(spawnPosition);
-        float speed = getArrowSpeed(wandTemplate, spellTemplate);
-        bomb.setVelocity(
-            direction.x * speed,
-            direction.y * speed,
-            direction.z * speed
-        );
-
-        world.spawnEntity(bomb);
-        world.playSound(null, player.getX(), player.getY(), player.getZ(), SoundEvents.ENTITY_TNT_PRIMED, SoundCategory.PLAYERS, 0.8f, 1.0f);
+    private static void applyShooterRecoil(ServerPlayerEntity player, Vec3d direction, float recoil) {
+        if (recoil == 0.0f || direction.lengthSquared() <= 1.0E-6) {
+            return;
+        }
+        double strength = Math.max(-1.2, Math.min(1.2, recoil / 400.0));
+        Vec3d impulse = direction.normalize().multiply(-strength);
+        player.addVelocity(impulse.x, impulse.y * 0.45, impulse.z);
+        player.velocityModified = true;
     }
 
     private static Vec3d getSpellSpawnPosition(ServerPlayerEntity player) {
@@ -401,17 +374,40 @@ public final class NoitaWandCaster {
     }
 
     private static boolean isProjectileSpell(ItemStack spellStack) {
-        return spellStack.isOf(ModItems.SPARK_BOLT)
-            || spellStack.isOf(ModItems.SPARK_BOLT_TRIGGER)
-            || spellStack.isOf(ModItems.SPARK_BOLT_TIMER)
-            || spellStack.isOf(ModItems.BOUNCING_BURST)
-            || spellStack.isOf(ModItems.LIGHT_BULLET)
-            || spellStack.isOf(ModItems.BOMB)
-            || spellStack.isOf(ModItems.BOMB_DEATH_TRIGGER);
+        return spellStack.getItem() instanceof NoitaProjectileSpellItem;
     }
 
-    private static boolean isBombSpell(ItemStack spellStack) {
-        return spellStack.isOf(ModItems.BOMB) || spellStack.isOf(ModItems.BOMB_DEATH_TRIGGER);
+    private static NoitaProjectilePayload toPayload(
+        NoitaWandTemplate wandTemplate,
+        NoitaProjectileSpellSpec spellSpec,
+        NoitaSpellTemplate template,
+        List<NoitaProjectilePayload> triggerPayloads
+    ) {
+        return new NoitaProjectilePayload(
+            spellSpec.itemPath(),
+            spellSpec.behavior(),
+            template.damage(),
+            template.criticalChancePercent(),
+            template.lifetimeTicks(),
+            template.trailLightStacks(),
+            template.explosionRadius(),
+            getArrowSpeed(wandTemplate, template),
+            getDivergence(wandTemplate, template),
+            spellSpec.gravity(),
+            spellSpec.drag(),
+            spellSpec.bounceDamping(),
+            spellSpec.renderScale(),
+            template.knockbackForce(),
+            template.friendlyFire(),
+            template.piercing(),
+            spellSpec.projectileCount(),
+            spellSpec.burstSpreadDegrees(),
+            template.triggerMode(),
+            template.triggerDelayTicks(),
+            template.bounceCount(),
+            template.modifierEffects(),
+            triggerPayloads
+        );
     }
 
     private static int secondsToTicks(float seconds, int minimumTicks) {
@@ -574,25 +570,22 @@ public final class NoitaWandCaster {
                 return;
             }
 
-            if (!isProjectileSpell(spellStack)) {
+            if (!(spellItem instanceof NoitaProjectileSpellItem projectileSpellItem)) {
                 return;
             }
 
-            NoitaSpellTemplate resolvedTemplate = castState.applyTo(template);
+            NoitaProjectileSpellSpec projectileSpec = resolveProjectileSpec(projectileSpellItem.getProjectileSpec());
+            NoitaSpellTemplate resolvedTemplate = castState.applyTo(projectileSpec.template());
             List<NoitaProjectilePayload> triggerPayloads = resolveTriggerPayload(resolvedTemplate);
             if (payloadSink != null) {
-                payloadSink.add(toPayload(spellStack, resolvedTemplate, triggerPayloads));
+                payloadSink.add(toPayload(wandTemplate, projectileSpec, resolvedTemplate, triggerPayloads));
                 if (slot >= 0) {
                     slotsToConsume.add(slot);
                 }
                 return;
             }
 
-            if (isBombSpell(spellStack)) {
-                spawnBomb(player, wandTemplate, resolvedTemplate, triggerPayloads);
-            } else {
-                spawnSparkBolt(player, wandTemplate, resolvedTemplate, triggerPayloads);
-            }
+            spawnProjectile(player, wandTemplate, projectileSpec, resolvedTemplate, triggerPayloads);
 
             castDelaySeconds += resolvedTemplate.castDelaySeconds();
             rechargeTimeSeconds += resolvedTemplate.rechargeTimeSeconds();
@@ -600,6 +593,26 @@ public final class NoitaWandCaster {
             if (slot >= 0) {
                 slotsToConsume.add(slot);
             }
+        }
+
+        private NoitaProjectileSpellSpec resolveProjectileSpec(NoitaProjectileSpellSpec projectileSpec) {
+            if (projectileSpec.behavior() != NoitaProjectileBehavior.RANDOM || ModItems.PROJECTILE_SPELLS.size() <= 1) {
+                return projectileSpec;
+            }
+
+            if (projectileSpec.itemPath().equals("random_static_projectile") && ModItems.STATIC_PROJECTILE_SPELLS.size() > 1) {
+                NoitaProjectileSpellItem selected;
+                do {
+                    selected = ModItems.STATIC_PROJECTILE_SPELLS.get(player.getRandom().nextInt(ModItems.STATIC_PROJECTILE_SPELLS.size()));
+                } while (selected.getProjectileSpec().behavior() == NoitaProjectileBehavior.RANDOM);
+                return selected.getProjectileSpec();
+            }
+
+            NoitaProjectileSpellItem selected;
+            do {
+                selected = ModItems.PROJECTILE_SPELLS.get(player.getRandom().nextInt(ModItems.PROJECTILE_SPELLS.size()));
+            } while (selected.getProjectileSpec().behavior() == NoitaProjectileBehavior.RANDOM || selected.getProjectileSpec().template().type() == NoitaSpellType.STATIC_PROJECTILE);
+            return selected.getProjectileSpec();
         }
 
         private List<NoitaProjectilePayload> resolveTriggerPayload(NoitaSpellTemplate template) {
@@ -727,22 +740,6 @@ public final class NoitaWandCaster {
             }
         }
 
-        private NoitaProjectilePayload toPayload(ItemStack spellStack, NoitaSpellTemplate template, List<NoitaProjectilePayload> triggerPayloads) {
-            return new NoitaProjectilePayload(
-                isBombSpell(spellStack) ? NoitaProjectilePayload.ProjectileKind.BOMB : NoitaProjectilePayload.ProjectileKind.SPARK_BOLT,
-                template.damage(),
-                template.criticalChancePercent(),
-                template.lifetimeTicks(),
-                template.trailLightStacks(),
-                template.explosionRadius(),
-                getArrowSpeed(wandTemplate, template),
-                getDivergence(wandTemplate, template),
-                template.triggerMode(),
-                template.triggerDelayTicks(),
-                triggerPayloads
-            );
-        }
-
         private void moveHandToDiscarded() {
             for (int slot : hand) {
                 if (slot >= 0 && slot < configuredSpells.size() && NoitaSpellItem.hasUsesRemaining(configuredSpells.get(slot))) {
@@ -808,13 +805,19 @@ public final class NoitaWandCaster {
         float criticalChancePercent,
         int lifetimeModifierTicks,
         float recoil,
+        float knockbackForce,
+        float gravity,
+        int bounceCount,
         boolean piercing,
         boolean friendlyFire,
-        int trailLightStacks
+        int trailLightStacks,
+        List<NoitaModifierEffect> modifierEffects
     ) {
-        private static final CastState EMPTY = new CastState(0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0, 0.0f, false, false, 0);
+        private static final CastState EMPTY = new CastState(0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0, 0.0f, 0.0f, 0.0f, 0, false, false, 0, List.of());
 
         private CastState add(NoitaSpellTemplate modifier) {
+            List<NoitaModifierEffect> nextModifierEffects = new ArrayList<>(modifierEffects);
+            nextModifierEffects.addAll(modifier.modifierEffects());
             return new CastState(
                 damage + modifier.damage(),
                 explosionRadius + modifier.explosionRadius(),
@@ -825,9 +828,13 @@ public final class NoitaWandCaster {
                 criticalChancePercent + modifier.criticalChancePercent(),
                 lifetimeModifierTicks + modifier.lifetimeModifierTicks(),
                 recoil + modifier.recoil(),
+                knockbackForce + modifier.knockbackForce(),
+                gravity + modifier.gravity() / NOITA_GRAVITY_TO_MC_GRAVITY,
+                mergeBounceCount(bounceCount, modifier.bounceCount(), modifier.modifierEffects().contains(NoitaModifierEffect.REMOVE_BOUNCE)),
                 piercing || modifier.piercing(),
                 friendlyFire || modifier.friendlyFire(),
-                trailLightStacks + modifier.trailLightStacks()
+                trailLightStacks + modifier.trailLightStacks(),
+                nextModifierEffects
             );
         }
 
@@ -854,6 +861,9 @@ public final class NoitaWandCaster {
                 .maxLifetimeTicks(projectile.maxLifetimeTicks())
                 .lifetimeModifierTicks(projectile.lifetimeModifierTicks() + lifetimeModifierTicks)
                 .recoil(projectile.recoil() + recoil)
+                .knockbackForce(projectile.knockbackForce() + knockbackForce)
+                .gravity(projectile.gravity() + gravity)
+                .bounceCount(bounceCount)
                 .piercing(projectile.piercing() || piercing)
                 .friendlyFire(projectile.friendlyFire() || friendlyFire)
                 .trailLightStacks(projectile.trailLightStacks() + trailLightStacks)
@@ -861,7 +871,15 @@ public final class NoitaWandCaster {
                 .triggerMode(projectile.triggerMode())
                 .triggerDrawCount(projectile.triggerDrawCount())
                 .triggerDelayTicks(projectile.triggerDelayTicks())
+                .modifierEffects(modifierEffects)
                 .build();
+        }
+
+        private static int mergeBounceCount(int currentBounceCount, int addedBounceCount, boolean removeBounce) {
+            if (removeBounce) {
+                return 0;
+            }
+            return currentBounceCount + addedBounceCount;
         }
     }
 

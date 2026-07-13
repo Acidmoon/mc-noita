@@ -18,3 +18,5 @@ out/
 .codegraph/
 
 src/main/generated/
+
+AGENTS.md

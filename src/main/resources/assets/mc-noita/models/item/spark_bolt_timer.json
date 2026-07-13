@@ -1,6 +1,6 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "mc-noita:item/spark_bolt"
+    "layer0": "mc-noita:item/spark_bolt_timer"
   }
 }

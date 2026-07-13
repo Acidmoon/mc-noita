@@ -1,5 +1,6 @@
 package com.mcnoita.spell;
 
+import java.util.List;
 import java.util.Objects;
 
 public record NoitaSpellTemplate(
@@ -19,24 +20,29 @@ public record NoitaSpellTemplate(
     int maxLifetimeTicks,
     int lifetimeModifierTicks,
     float recoil,
+    float knockbackForce,
     boolean piercing,
     boolean friendlyFire,
     int trailLightStacks,
     int drawCount,
     NoitaSpellTriggerMode triggerMode,
     int triggerDrawCount,
-    int triggerDelayTicks
+    int triggerDelayTicks,
+    float gravity,
+    int bounceCount,
+    List<NoitaModifierEffect> modifierEffects
 ) {
     public static final int UNLIMITED_USES = -1;
 
     public NoitaSpellTemplate {
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(triggerMode, "triggerMode");
+        modifierEffects = List.copyOf(Objects.requireNonNull(modifierEffects, "modifierEffects"));
         if (maxUses < UNLIMITED_USES) {
             throw new IllegalArgumentException("maxUses must be unlimited or non-negative");
         }
-        if (explosionRadius < 0.0f) {
-            throw new IllegalArgumentException("explosionRadius must not be negative");
+        if (type != NoitaSpellType.PROJECTILE_MODIFIER && explosionRadius < 0.0f) {
+            throw new IllegalArgumentException("explosionRadius must not be negative for non-modifier spells");
         }
         if (speed < 0.0f) {
             throw new IllegalArgumentException("speed must not be negative");
@@ -61,6 +67,9 @@ public record NoitaSpellTemplate(
         }
         if (triggerDelayTicks < 0) {
             throw new IllegalArgumentException("triggerDelayTicks must not be negative");
+        }
+        if (bounceCount < 0) {
+            throw new IllegalArgumentException("bounceCount must not be negative");
         }
     }
 
@@ -89,6 +98,7 @@ public record NoitaSpellTemplate(
         private int maxLifetimeTicks;
         private int lifetimeModifierTicks;
         private float recoil;
+        private float knockbackForce;
         private boolean piercing;
         private boolean friendlyFire;
         private int trailLightStacks;
@@ -96,6 +106,9 @@ public record NoitaSpellTemplate(
         private NoitaSpellTriggerMode triggerMode = NoitaSpellTriggerMode.NONE;
         private int triggerDrawCount;
         private int triggerDelayTicks;
+        private float gravity;
+        private int bounceCount;
+        private List<NoitaModifierEffect> modifierEffects = List.of();
 
         private Builder() {
         }
@@ -180,6 +193,11 @@ public record NoitaSpellTemplate(
             return this;
         }
 
+        public Builder knockbackForce(float knockbackForce) {
+            this.knockbackForce = knockbackForce;
+            return this;
+        }
+
         public Builder piercing(boolean piercing) {
             this.piercing = piercing;
             return this;
@@ -215,6 +233,31 @@ public record NoitaSpellTemplate(
             return this;
         }
 
+        public Builder gravity(float gravity) {
+            this.gravity = gravity;
+            return this;
+        }
+
+        public Builder bounceCount(int bounceCount) {
+            this.bounceCount = bounceCount;
+            return this;
+        }
+
+        public Builder modifierEffect(NoitaModifierEffect modifierEffect) {
+            this.modifierEffects = List.of(modifierEffect);
+            return this;
+        }
+
+        public Builder modifierEffects(NoitaModifierEffect... modifierEffects) {
+            this.modifierEffects = List.of(modifierEffects);
+            return this;
+        }
+
+        public Builder modifierEffects(List<NoitaModifierEffect> modifierEffects) {
+            this.modifierEffects = List.copyOf(modifierEffects);
+            return this;
+        }
+
         public NoitaSpellTemplate build() {
             return new NoitaSpellTemplate(
                 type,
@@ -233,13 +276,17 @@ public record NoitaSpellTemplate(
                 maxLifetimeTicks,
                 lifetimeModifierTicks,
                 recoil,
+                knockbackForce,
                 piercing,
                 friendlyFire,
                 trailLightStacks,
                 drawCount,
                 triggerMode,
                 triggerDrawCount,
-                triggerDelayTicks
+                triggerDelayTicks,
+                gravity,
+                bounceCount,
+                modifierEffects
             );
         }
     }

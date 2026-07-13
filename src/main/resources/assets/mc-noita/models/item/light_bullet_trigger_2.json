@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "mc-noita:item/light_bullet_trigger_2"
+  }
+}

@@ -1,6 +1,6 @@
 {
   "parent": "minecraft:item/generated",
   "textures": {
-    "layer0": "minecraft:item/torch"
+    "layer0": "mc-noita:item/light"
   }
 }
