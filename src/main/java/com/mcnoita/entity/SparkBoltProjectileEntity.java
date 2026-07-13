@@ -2,6 +2,9 @@ package com.mcnoita.entity;
 
 import com.mcnoita.MCNoita;
 import com.mcnoita.item.ModItems;
+import com.mcnoita.persistence.NoitaNbtLimits;
+import com.mcnoita.persistence.NoitaNbtSafety;
+import com.mcnoita.persistence.NoitaNbtSchema;
 import com.mcnoita.particle.ModParticles;
 import com.mcnoita.spell.NoitaModifierEffect;
 import com.mcnoita.spell.NoitaProjectileBehavior;
@@ -319,6 +322,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     @Override
     public void writeCustomDataToNbt(NbtCompound nbt) {
         super.writeCustomDataToNbt(nbt);
+        NoitaNbtSchema.writeCurrentVersion(nbt);
         nbt.putString(ITEM_PATH_KEY, this.itemPath);
         nbt.putString(BEHAVIOR_KEY, this.behavior.name());
         nbt.putFloat(DAMAGE_KEY, this.damage);
@@ -344,6 +348,13 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     @Override
     public void readCustomDataFromNbt(NbtCompound nbt) {
         super.readCustomDataFromNbt(nbt);
+        if (!NoitaNbtSchema.migrateToCurrent(nbt, NoitaNbtSchema.Kind.ENTITY)
+            || !NoitaNbtSafety.validateTree(nbt, NoitaNbtLimits.MAX_ENTITY_NBT_DEPTH, NoitaNbtLimits.MAX_ENTITY_NBT_NODES, NoitaNbtLimits.MAX_PAYLOAD_CHILDREN)
+            || !NoitaNbtSafety.hasValidEnumIfPresent(nbt, BEHAVIOR_KEY, NoitaProjectileBehavior.class)
+            || !NoitaNbtSafety.hasValidEnumIfPresent(nbt, TRIGGER_MODE_KEY, NoitaSpellTriggerMode.class)) {
+            this.discard();
+            return;
+        }
         if (nbt.contains(ITEM_PATH_KEY, NbtElement.STRING_TYPE)) {
             this.itemPath = nbt.getString(ITEM_PATH_KEY);
             setItemFromPath(this.itemPath);

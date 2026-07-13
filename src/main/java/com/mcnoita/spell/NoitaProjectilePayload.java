@@ -1,7 +1,11 @@
 package com.mcnoita.spell;
 
+import com.mcnoita.persistence.NoitaNbtLimits;
+import com.mcnoita.persistence.NoitaNbtSafety;
+import com.mcnoita.persistence.NoitaNbtSchema;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
 import net.minecraft.nbt.NbtList;
@@ -61,6 +65,17 @@ public record NoitaProjectilePayload(
             itemPath = "spark_bolt";
         }
         behavior = behavior == null ? NoitaProjectileBehavior.BOLT : behavior;
+        damage = requireFinite(damage, "damage");
+        criticalChancePercent = requireFinite(criticalChancePercent, "criticalChancePercent");
+        explosionRadius = requireFinite(explosionRadius, "explosionRadius");
+        speed = requireFinite(speed, "speed");
+        divergence = requireFinite(divergence, "divergence");
+        gravity = requireFinite(gravity, "gravity");
+        drag = requireFinite(drag, "drag");
+        bounceDamping = requireFinite(bounceDamping, "bounceDamping");
+        renderScale = requireFinite(renderScale, "renderScale");
+        knockbackForce = requireFinite(knockbackForce, "knockbackForce");
+        burstSpreadDegrees = requireFinite(burstSpreadDegrees, "burstSpreadDegrees");
         lifetimeTicks = Math.max(1, lifetimeTicks);
         trailLightStacks = Math.max(0, trailLightStacks);
         explosionRadius = Math.max(0.0f, explosionRadius);
@@ -69,10 +84,10 @@ public record NoitaProjectilePayload(
         drag = Math.max(0.0f, drag);
         bounceDamping = Math.max(0.0f, bounceDamping);
         renderScale = renderScale <= 0.0f ? 1.0f : renderScale;
-        projectileCount = Math.max(1, projectileCount);
+        projectileCount = Math.min(NoitaNbtLimits.MAX_PROJECTILE_COUNT, Math.max(1, projectileCount));
         burstSpreadDegrees = Math.max(0.0f, burstSpreadDegrees);
         triggerMode = triggerMode == null ? NoitaSpellTriggerMode.NONE : triggerMode;
-        triggerDelayTicks = Math.max(0, triggerDelayTicks);
+        triggerDelayTicks = Math.min(NoitaNbtLimits.MAX_TRIGGER_DELAY_TICKS, Math.max(0, triggerDelayTicks));
         bounceCount = Math.max(0, bounceCount);
         modifierEffects = List.copyOf(modifierEffects);
         payloads = List.copyOf(payloads);
@@ -80,6 +95,7 @@ public record NoitaProjectilePayload(
 
     public NbtCompound toNbt() {
         NbtCompound nbt = new NbtCompound();
+        NoitaNbtSchema.writeCurrentVersion(nbt);
         nbt.putString(ITEM_PATH_KEY, itemPath);
         nbt.putString(BEHAVIOR_KEY, behavior.name());
         nbt.putFloat(DAMAGE_KEY, damage);
@@ -107,12 +123,31 @@ public record NoitaProjectilePayload(
     }
 
     public static NoitaProjectilePayload fromNbt(NbtCompound nbt) {
+        return tryFromNbt(nbt).orElseThrow(() -> new IllegalArgumentException("Invalid Noita projectile payload NBT"));
+    }
+
+    public static Optional<NoitaProjectilePayload> tryFromNbt(NbtCompound rawNbt) {
+        NbtCompound nbt = rawNbt.copy();
+        if (!NoitaNbtSchema.migrateToCurrent(nbt, NoitaNbtSchema.Kind.PROJECTILE_PAYLOAD)
+            || !NoitaNbtSafety.validateTree(nbt, NoitaNbtLimits.MAX_PAYLOAD_DEPTH, NoitaNbtLimits.MAX_PAYLOAD_NODES, NoitaNbtLimits.MAX_PAYLOAD_CHILDREN)
+            || !NoitaNbtSafety.hasValidEnumIfPresent(nbt, BEHAVIOR_KEY, NoitaProjectileBehavior.class)
+            || !NoitaNbtSafety.hasValidEnumIfPresent(nbt, TRIGGER_MODE_KEY, NoitaSpellTriggerMode.class)) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(readValidatedNbt(nbt));
+        } catch (IllegalArgumentException ignored) {
+            return Optional.empty();
+        }
+    }
+
+    private static NoitaProjectilePayload readValidatedNbt(NbtCompound nbt) {
         return new NoitaProjectilePayload(
             readItemPath(nbt),
             readBehavior(nbt),
             nbt.getFloat(DAMAGE_KEY),
             nbt.getFloat(CRITICAL_CHANCE_PERCENT_KEY),
-            Math.max(1, nbt.getInt(LIFETIME_TICKS_KEY)),
+            Math.min(NoitaNbtLimits.MAX_PROJECTILE_LIFETIME_TICKS, Math.max(1, nbt.getInt(LIFETIME_TICKS_KEY))),
             Math.max(0, nbt.getInt(TRAIL_LIGHT_STACKS_KEY)),
             Math.max(0.0f, nbt.getFloat(EXPLOSION_RADIUS_KEY)),
             Math.max(0.0f, nbt.getFloat(SPEED_KEY)),
@@ -124,10 +159,10 @@ public record NoitaProjectilePayload(
             nbt.contains(KNOCKBACK_FORCE_KEY, NbtElement.NUMBER_TYPE) ? nbt.getFloat(KNOCKBACK_FORCE_KEY) : 0.0f,
             nbt.contains(FRIENDLY_FIRE_KEY, NbtElement.BYTE_TYPE) && nbt.getBoolean(FRIENDLY_FIRE_KEY),
             nbt.contains(PIERCING_KEY, NbtElement.BYTE_TYPE) && nbt.getBoolean(PIERCING_KEY),
-            nbt.contains(PROJECTILE_COUNT_KEY, NbtElement.NUMBER_TYPE) ? Math.max(1, nbt.getInt(PROJECTILE_COUNT_KEY)) : 1,
+            nbt.contains(PROJECTILE_COUNT_KEY, NbtElement.NUMBER_TYPE) ? Math.min(NoitaNbtLimits.MAX_PROJECTILE_COUNT, Math.max(1, nbt.getInt(PROJECTILE_COUNT_KEY))) : 1,
             nbt.contains(BURST_SPREAD_DEGREES_KEY, NbtElement.NUMBER_TYPE) ? Math.max(0.0f, nbt.getFloat(BURST_SPREAD_DEGREES_KEY)) : 0.0f,
             readEnum(nbt, TRIGGER_MODE_KEY, NoitaSpellTriggerMode.NONE),
-            Math.max(0, nbt.getInt(TRIGGER_DELAY_TICKS_KEY)),
+            Math.min(NoitaNbtLimits.MAX_TRIGGER_DELAY_TICKS, Math.max(0, nbt.getInt(TRIGGER_DELAY_TICKS_KEY))),
             nbt.contains(BOUNCE_COUNT_KEY, NbtElement.NUMBER_TYPE) ? Math.max(0, nbt.getInt(BOUNCE_COUNT_KEY)) : 0,
             fromEffectNbtList(nbt.getList(MODIFIER_EFFECTS_KEY, NbtElement.STRING_TYPE)),
             fromNbtList(nbt.getList(PAYLOADS_KEY, NbtElement.COMPOUND_TYPE))
@@ -143,9 +178,12 @@ public record NoitaProjectilePayload(
     }
 
     public static List<NoitaProjectilePayload> fromNbtList(NbtList nbtList) {
+        if (nbtList.size() > NoitaNbtLimits.MAX_PAYLOAD_CHILDREN) {
+            return List.of();
+        }
         List<NoitaProjectilePayload> payloads = new ArrayList<>(nbtList.size());
         for (int i = 0; i < nbtList.size(); i++) {
-            payloads.add(fromNbt(nbtList.getCompound(i)));
+            tryFromNbt(nbtList.getCompound(i)).ifPresent(payloads::add);
         }
         return payloads;
     }
@@ -159,6 +197,9 @@ public record NoitaProjectilePayload(
     }
 
     public static List<NoitaModifierEffect> fromEffectNbtList(NbtList nbtList) {
+        if (nbtList.size() > NoitaNbtLimits.MAX_MODIFIER_EFFECTS) {
+            return List.of();
+        }
         List<NoitaModifierEffect> modifierEffects = new ArrayList<>(nbtList.size());
         for (int i = 0; i < nbtList.size(); i++) {
             try {
@@ -196,5 +237,12 @@ public record NoitaProjectilePayload(
         } catch (IllegalArgumentException ignored) {
             return fallback;
         }
+    }
+
+    private static float requireFinite(float value, String name) {
+        if (!Float.isFinite(value)) {
+            throw new IllegalArgumentException(name + " must be finite");
+        }
+        return value;
     }
 }

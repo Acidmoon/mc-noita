@@ -1,6 +1,7 @@
 package com.mcnoita.player;
 
 import com.mcnoita.network.ModNetworking;
+import com.mcnoita.network.NoitaNetworkProtocol;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -144,6 +145,9 @@ public final class NoitaHoverManager {
     }
 
     private static float sanitizeMovementInput(float input) {
+        if (!Float.isFinite(input)) {
+            return 0.0f;
+        }
         return Math.max(-1.0f, Math.min(1.0f, input));
     }
 
@@ -161,6 +165,7 @@ public final class NoitaHoverManager {
         }
 
         net.minecraft.network.PacketByteBuf buf = PacketByteBufs.create();
+        buf.writeVarInt(NoitaNetworkProtocol.VERSION);
         buf.writeVarInt(after);
         buf.writeVarInt(MAX_ENERGY);
         ServerPlayNetworking.send(player, ModNetworking.HOVER_SYNC, buf);

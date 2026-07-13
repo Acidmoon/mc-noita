@@ -10,6 +10,9 @@ base {
     archivesName = project.archives_base_name
 }
 
+// Create this before loom config so the test-only Fabric mod can be registered.
+def gameTestSourceSet = sourceSets.create("gameTest")
+
 java {
     toolchain {
         languageVersion = JavaLanguageVersion.of(17)
@@ -25,6 +28,9 @@ loom {
             sourceSet sourceSets.main
             sourceSet sourceSets.client
         }
+        "mc-noita-gametest" {
+            sourceSet gameTestSourceSet
+        }
     }
 
     runs {
@@ -36,6 +42,18 @@ loom {
             vmArg "-Dfabric-api.datagen.modid=mc-noita"
             runDir "build/datagen"
         }
+        gametest {
+            inherit server
+            name "MC Noita Game Tests"
+            vmArg "-Dfabric-api.gametest"
+            vmArg "-Dfabric-api.gametest.report-file=${file("build/gametest-results.xml")}"
+            runDir "build/gametest"
+        }
+        smokeDedicatedServer {
+            inherit server
+            name "MC Noita Dedicated Server Smoke Test"
+            runDir "build/smoke-server"
+        }
     }
 }
 
@@ -45,6 +63,15 @@ sourceSets {
             srcDir "src/main/generated"
         }
     }
+    test {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.output + sourceSets.main.runtimeClasspath
+    }
+    // This source set is intentionally excluded from the published JAR.
+    gameTest {
+        compileClasspath += sourceSets.main.output + sourceSets.main.compileClasspath + configurations.testRuntimeClasspath
+        runtimeClasspath += output + sourceSets.main.output + sourceSets.main.runtimeClasspath + compileClasspath
+    }
 }
 
 dependencies {
@@ -52,6 +79,15 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    testImplementation platform("org.junit:junit-bom:5.10.2")
+    testImplementation "org.junit.jupiter:junit-jupiter"
+    testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+configurations {
+    gameTestImplementation.extendsFrom testImplementation
+    gameTestRuntimeOnly.extendsFrom testRuntimeOnly
 }
 
 processResources {
@@ -65,6 +101,78 @@ processResources {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
     options.release = 17
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}
+
+tasks.register("gameTest", Test) {
+    group = "verification"
+    description = "Runs deterministic fixture checks from the isolated GameTest source set."
+    testClassesDirs = sourceSets.gameTest.output.classesDirs
+    classpath = sourceSets.gameTest.runtimeClasspath
+    useJUnitPlatform {
+        includeTags "gametest"
+    }
+}
+
+tasks.register("generateSpellCatalog", Exec) {
+    group = "documentation"
+    description = "Generates the spell coverage baseline and implementation report."
+    inputs.file "tools/generate-spell-catalog.ps1"
+    inputs.file "src/main/java/com/mcnoita/item/ModItems.java"
+    inputs.dir "src/main/resources/assets/mc-noita"
+    outputs.file "docs/baseline/spell-catalog.json"
+    outputs.file "docs/实现覆盖率.md"
+    commandLine "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file("tools/generate-spell-catalog.ps1").absolutePath
+}
+
+tasks.register("checkSpellCatalog", Exec) {
+    group = "verification"
+    description = "Checks spell catalog identity, resources, language pairs, and numeric safety."
+    dependsOn "generateSpellCatalog"
+    inputs.file "docs/baseline/spell-catalog.json"
+    inputs.file "docs/baseline/resource-allowlist.json"
+    commandLine "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file("tools/generate-spell-catalog.ps1").absolutePath, "-Check"
+}
+
+tasks.register("checkMainServerArchitecture", Exec) {
+    group = "verification"
+    description = "Rejects common-source imports of Minecraft client classes."
+    inputs.dir "src/main/java"
+    commandLine "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file("tools/check-server-architecture.ps1").absolutePath
+}
+
+tasks.register("smokeDedicatedServer", Exec) {
+    group = "verification"
+    description = "Starts and stops an isolated Fabric dedicated server, retaining its log on failure."
+    dependsOn "classes", "checkMainServerArchitecture"
+    inputs.dir "src/main/java"
+    outputs.file "build/smoke-server/smoke-server.log"
+    commandLine "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", file("tools/smoke-dedicated-server.ps1").absolutePath
+}
+
+tasks.named("test") {
+    dependsOn "checkSpellCatalog"
+}
+
+tasks.register("verifyG00") {
+    group = "verification"
+    description = "Runs the G00 catalog, unit, GameTest fixture, dedicated-server smoke, and build checks."
+    dependsOn "checkSpellCatalog", "test", "gameTest", "smokeDedicatedServer", "build"
+}
+
+tasks.named("gameTest") {
+    mustRunAfter "test"
+}
+
+tasks.named("smokeDedicatedServer") {
+    mustRunAfter "gameTest"
+}
+
+tasks.named("build") {
+    mustRunAfter "smokeDedicatedServer"
 }
 
 jar {

@@ -8,8 +8,8 @@ public final class ClientHoverEnergy {
     }
 
     public static void set(int energy, int maxEnergy) {
-        ClientHoverEnergy.energy = Math.max(0, energy);
-        ClientHoverEnergy.maxEnergy = Math.max(1, maxEnergy);
+        ClientHoverEnergy.maxEnergy = Math.max(1, Math.min(1_000_000, maxEnergy));
+        ClientHoverEnergy.energy = Math.max(0, Math.min(ClientHoverEnergy.maxEnergy, energy));
     }
 
     public static float getFraction() {

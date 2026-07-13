@@ -38,6 +38,18 @@ public record NoitaSpellTemplate(
         Objects.requireNonNull(type, "type");
         Objects.requireNonNull(triggerMode, "triggerMode");
         modifierEffects = List.copyOf(Objects.requireNonNull(modifierEffects, "modifierEffects"));
+        requireFinite(damage, "damage");
+        requireFinite(explosionRadius, "explosionRadius");
+        requireFinite(spreadDegrees, "spreadDegrees");
+        requireFinite(speed, "speed");
+        requireFinite(castDelaySeconds, "castDelaySeconds");
+        requireFinite(rechargeTimeSeconds, "rechargeTimeSeconds");
+        requireFinite(spreadModifierDegrees, "spreadModifierDegrees");
+        requireFinite(speedMultiplier, "speedMultiplier");
+        requireFinite(criticalChancePercent, "criticalChancePercent");
+        requireFinite(recoil, "recoil");
+        requireFinite(knockbackForce, "knockbackForce");
+        requireFinite(gravity, "gravity");
         if (maxUses < UNLIMITED_USES) {
             throw new IllegalArgumentException("maxUses must be unlimited or non-negative");
         }
@@ -79,6 +91,12 @@ public record NoitaSpellTemplate(
 
     public boolean hasLimitedUses() {
         return maxUses != UNLIMITED_USES;
+    }
+
+    private static void requireFinite(float value, String field) {
+        if (!Float.isFinite(value)) {
+            throw new IllegalArgumentException(field + " must be finite");
+        }
     }
 
     public static final class Builder {

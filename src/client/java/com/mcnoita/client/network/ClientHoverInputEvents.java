@@ -1,7 +1,9 @@
 package com.mcnoita.client.network;
 
 import com.mcnoita.client.player.ClientHoverEnergy;
+import com.mcnoita.network.HoverInputRequest;
 import com.mcnoita.network.ModNetworking;
+import com.mcnoita.network.NoitaNetworkProtocol;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
@@ -18,6 +20,12 @@ public final class ClientHoverInputEvents {
     private static final double HOVER_SPRINT_MULTIPLIER = 1.3;
 
     private static int jumpHeldTicks;
+    private static final int HEARTBEAT_TICKS = 20;
+    private static int sequence;
+    private static int lastSentTick = Integer.MIN_VALUE;
+    private static boolean lastJumpHeld;
+    private static float lastSidewaysInput;
+    private static float lastForwardInput;
 
     private ClientHoverInputEvents() {
     }
@@ -45,11 +53,18 @@ public final class ClientHoverInputEvents {
             applyHoverVelocity(client.player, sidewaysInput, forwardInput);
         }
 
-        PacketByteBuf buf = PacketByteBufs.create();
-        buf.writeBoolean(jumpHeld);
-        buf.writeFloat(sidewaysInput);
-        buf.writeFloat(forwardInput);
-        ClientPlayNetworking.send(ModNetworking.HOVER_INPUT, buf);
+        boolean inputChanged = jumpHeld != lastJumpHeld
+            || Float.compare(sidewaysInput, lastSidewaysInput) != 0
+            || Float.compare(forwardInput, lastForwardInput) != 0;
+        if (inputChanged || client.player.age - lastSentTick >= HEARTBEAT_TICKS) {
+            PacketByteBuf buf = PacketByteBufs.create();
+            new HoverInputRequest(NoitaNetworkProtocol.VERSION, sequence++, jumpHeld, sidewaysInput, forwardInput).write(buf);
+            ClientPlayNetworking.send(ModNetworking.HOVER_INPUT, buf);
+            lastJumpHeld = jumpHeld;
+            lastSidewaysInput = sidewaysInput;
+            lastForwardInput = forwardInput;
+            lastSentTick = client.player.age;
+        }
     }
 
     private static void applyHoverVelocity(ClientPlayerEntity player, float sidewaysInput, float forwardInput) {
@@ -102,6 +117,9 @@ public final class ClientHoverInputEvents {
     }
 
     private static float sanitizeMovementInput(float input) {
+        if (!Float.isFinite(input)) {
+            return 0.0f;
+        }
         return Math.max(-1.0f, Math.min(1.0f, input));
     }
 

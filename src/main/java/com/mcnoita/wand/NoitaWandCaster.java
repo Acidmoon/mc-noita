@@ -5,6 +5,9 @@ import com.mcnoita.item.ModItems;
 import com.mcnoita.item.NoitaProjectileSpellItem;
 import com.mcnoita.item.NoitaSpellItem;
 import com.mcnoita.item.NoitaWandItem;
+import com.mcnoita.persistence.NoitaNbtLimits;
+import com.mcnoita.persistence.NoitaNbtSafety;
+import com.mcnoita.persistence.NoitaNbtSchema;
 import com.mcnoita.spell.NoitaModifierEffect;
 import com.mcnoita.spell.NoitaProjectileBehavior;
 import com.mcnoita.spell.NoitaProjectilePayload;
@@ -57,9 +60,25 @@ public final class NoitaWandCaster {
     private NoitaWandCaster() {
     }
 
+    public static boolean canCast(ServerPlayerEntity player) {
+        ItemStack wandStack = player.getMainHandStack();
+        if (!(wandStack.getItem() instanceof NoitaWandItem wandItem) || !wandItem.hasSupportedNbt(wandStack)) {
+            return false;
+        }
+        NbtCompound state = getOrCreateCastState(wandStack);
+        if (state == null) {
+            return false;
+        }
+        long now = player.getServerWorld().getTime();
+        return state.getLong(RECHARGE_END_TICK_KEY) <= now && state.getLong(NEXT_CAST_TICK_KEY) <= now;
+    }
+
     public static void cast(ServerPlayerEntity player) {
         ItemStack wandStack = player.getStackInHand(Hand.MAIN_HAND);
         if (!(wandStack.getItem() instanceof NoitaWandItem wandItem)) {
+            return;
+        }
+        if (!wandItem.hasSupportedNbt(wandStack)) {
             return;
         }
 
@@ -67,6 +86,9 @@ public final class NoitaWandCaster {
         long now = world.getTime();
         NoitaWandTemplate wandTemplate = wandItem.getTemplate(wandStack);
         NbtCompound state = getOrCreateCastState(wandStack);
+        if (state == null) {
+            return;
+        }
         float currentMana = updateMana(state, now, wandTemplate);
         DefaultedList<ItemStack> configuredSpells = NoitaWandItem.getSpellStacks(wandStack, wandTemplate.capacity());
         List<Integer> spellSlots = getConfiguredSpellSlots(configuredSpells);
@@ -80,7 +102,7 @@ public final class NoitaWandCaster {
         if (state.getInt(SPELLS_HASH_KEY) != spellsHash || state.contains(DRAW_INDEX_KEY, NbtElement.NUMBER_TYPE)) {
             resetDeck(state, spellSlots, wandTemplate.shuffle(), player.getRandom().nextLong(), spellsHash);
             resetTiming(state);
-        } else if (readDeck(state).isEmpty() && readDiscarded(state).isEmpty() && !spellSlots.isEmpty()) {
+        } else if (readDeck(state, wandTemplate.capacity()).isEmpty() && readDiscarded(state, wandTemplate.capacity()).isEmpty() && !spellSlots.isEmpty()) {
             resetDeck(state, spellSlots, wandTemplate.shuffle(), player.getRandom().nextLong(), spellsHash);
         }
 
@@ -100,8 +122,8 @@ public final class NoitaWandCaster {
             player,
             wandTemplate,
             configuredSpells,
-            readDeck(state),
-            readDiscarded(state),
+            readDeck(state, wandTemplate.capacity()),
+            readDiscarded(state, wandTemplate.capacity()),
             currentMana,
             !spellSlots.isEmpty()
         );
@@ -141,9 +163,15 @@ public final class NoitaWandCaster {
         if (!(wandStack.getItem() instanceof NoitaWandItem wandItem)) {
             return CastHudState.empty();
         }
+        if (!wandItem.hasSupportedNbt(wandStack)) {
+            return CastHudState.empty();
+        }
 
         NoitaWandTemplate wandTemplate = wandItem.getTemplate(wandStack);
         NbtCompound state = getOrCreateCastState(wandStack);
+        if (state == null) {
+            return CastHudState.empty();
+        }
         long now = player.getServerWorld().getTime();
         float currentMana = updateMana(state, now, wandTemplate);
         int manaMax = wandTemplate.manaMax();
@@ -212,8 +240,9 @@ public final class NoitaWandCaster {
         if (!nbt.contains(CAST_STATE_KEY, NbtElement.COMPOUND_TYPE)) {
             nbt.put(CAST_STATE_KEY, new NbtCompound());
         }
-
-        return nbt.getCompound(CAST_STATE_KEY);
+        NbtCompound state = nbt.getCompound(CAST_STATE_KEY);
+        return NoitaNbtSchema.migrateToCurrent(state, NoitaNbtSchema.Kind.CAST_STATE)
+            && NoitaNbtSafety.validateTree(state, 16, 1024, NoitaNbtLimits.MAX_CAST_STATE_SLOTS) ? state : null;
     }
 
     private static float updateMana(NbtCompound state, long now, NoitaWandTemplate wandTemplate) {
@@ -225,6 +254,9 @@ public final class NoitaWandCaster {
         }
 
         float currentMana = state.contains(CURRENT_MANA_KEY, NbtElement.FLOAT_TYPE) ? state.getFloat(CURRENT_MANA_KEY) : manaMax;
+        if (!NoitaNbtSafety.isFinite(currentMana)) {
+            currentMana = manaMax;
+        }
         long lastManaTick = state.contains(LAST_MANA_TICK_KEY, NbtElement.LONG_TYPE) ? state.getLong(LAST_MANA_TICK_KEY) : now;
         if (now > lastManaTick && currentMana < manaMax) {
             currentMana += (now - lastManaTick) * (wandTemplate.manaChargeSpeed() / 20.0f);
@@ -242,6 +274,9 @@ public final class NoitaWandCaster {
     }
 
     private static float clampMana(float mana, int manaMax) {
+        if (!Float.isFinite(mana)) {
+            return Math.max(0, manaMax);
+        }
         return Math.max(0.0f, Math.min(manaMax, mana));
     }
 
@@ -281,19 +316,29 @@ public final class NoitaWandCaster {
         return hash;
     }
 
-    private static List<Integer> readDeck(NbtCompound state) {
-        return readIntList(state, DECK_KEY);
+    private static List<Integer> readDeck(NbtCompound state, int capacity) {
+        return readIntList(state, DECK_KEY, capacity);
     }
 
-    private static List<Integer> readDiscarded(NbtCompound state) {
-        return readIntList(state, DISCARDED_KEY);
+    private static List<Integer> readDiscarded(NbtCompound state, int capacity) {
+        return readIntList(state, DISCARDED_KEY, capacity);
     }
 
-    private static List<Integer> readIntList(NbtCompound state, String key) {
+    private static List<Integer> readIntList(NbtCompound state, String key, int capacity) {
         NbtList nbtList = state.getList(key, NbtElement.INT_TYPE);
+        int safeCapacity = Math.min(NoitaNbtLimits.MAX_CAST_STATE_SLOTS, Math.max(1, capacity));
+        if (nbtList.size() > safeCapacity) {
+            return List.of();
+        }
         List<Integer> values = new ArrayList<>(nbtList.size());
+        boolean[] seen = new boolean[safeCapacity];
         for (int i = 0; i < nbtList.size(); i++) {
-            values.add(nbtList.getInt(i));
+            int slot = nbtList.getInt(i);
+            if (slot < 0 || slot >= safeCapacity || seen[slot]) {
+                return List.of();
+            }
+            seen[slot] = true;
+            values.add(slot);
         }
 
         return values;

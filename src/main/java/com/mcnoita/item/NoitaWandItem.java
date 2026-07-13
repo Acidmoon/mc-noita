@@ -1,10 +1,11 @@
 package com.mcnoita.item;
 
 import com.mcnoita.screen.NoitaWandScreenHandler;
+import com.mcnoita.persistence.NoitaNbtLimits;
+import com.mcnoita.persistence.NoitaNbtSafety;
+import com.mcnoita.persistence.NoitaNbtSchema;
 import com.mcnoita.wand.NoitaWandTemplate;
-import java.util.List;
 import net.fabricmc.fabric.api.screenhandler.v1.ExtendedScreenHandlerFactory;
-import net.minecraft.client.item.TooltipContext;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.Item;
@@ -16,7 +17,6 @@ import net.minecraft.network.PacketByteBuf;
 import net.minecraft.screen.ScreenHandler;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
 import net.minecraft.util.Hand;
 import net.minecraft.util.TypedActionResult;
 import net.minecraft.util.collection.DefaultedList;
@@ -24,7 +24,9 @@ import net.minecraft.world.World;
 
 public class NoitaWandItem extends Item {
     private static final String TEMPLATE_KEY = "NoitaWandTemplate";
-    private static final String SPELLS_KEY = "NoitaWandSpells";
+    private static final String LEGACY_SPELLS_KEY = "NoitaWandSpells";
+    private static final String SPELLS_KEY = "NoitaWandSlots";
+    private static final String SLOT_ENTRIES_KEY = "Entries";
     private static final String SLOT_KEY = "Slot";
 
     private final NoitaWandTemplate defaultTemplate;
@@ -39,23 +41,6 @@ public class NoitaWandItem extends Item {
         ItemStack stack = super.getDefaultStack();
         setTemplate(stack, defaultTemplate);
         return stack;
-    }
-
-    @Override
-    public void appendTooltip(ItemStack stack, World world, List<Text> tooltip, TooltipContext context) {
-        NoitaWandTemplate template = getTemplate(stack);
-
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.shuffle", yesNo(template.shuffle())).formatted(Formatting.GRAY));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.spells_per_cast", template.spellsPerCast()).formatted(Formatting.GRAY));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.cast_delay", template.castDelaySeconds()).formatted(Formatting.GRAY));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.recharge_time", template.rechargeTimeSeconds()).formatted(Formatting.GRAY));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.mana_max", template.manaMax()).formatted(Formatting.BLUE));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.mana_charge_speed", template.manaChargeSpeed()).formatted(Formatting.BLUE));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.capacity", template.capacity()).formatted(Formatting.GRAY));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.loaded_spells", getLoadedSpellCount(stack, template.capacity()), template.capacity()).formatted(Formatting.AQUA));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.spread", template.spreadDegrees()).formatted(Formatting.GRAY));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.always_cast_count", template.alwaysCastSpells().size()).formatted(Formatting.LIGHT_PURPLE));
-        tooltip.add(Text.translatable("tooltip.mc-noita.wand.speed_multiplier", template.speedMultiplier()).formatted(Formatting.DARK_GRAY));
     }
 
     @Override
@@ -90,7 +75,7 @@ public class NoitaWandItem extends Item {
             return defaultTemplate;
         }
 
-        return NoitaWandTemplate.fromNbt(nbt.getCompound(TEMPLATE_KEY));
+        return NoitaWandTemplate.tryFromNbt(nbt.getCompound(TEMPLATE_KEY)).orElse(defaultTemplate);
     }
 
     public static void setTemplate(ItemStack stack, NoitaWandTemplate template) {
@@ -98,20 +83,35 @@ public class NoitaWandItem extends Item {
     }
 
     public static DefaultedList<ItemStack> getSpellStacks(ItemStack wandStack, int capacity) {
-        DefaultedList<ItemStack> spells = DefaultedList.ofSize(capacity, ItemStack.EMPTY);
+        int safeCapacity = Math.min(NoitaNbtLimits.MAX_WAND_CAPACITY, Math.max(1, capacity));
+        DefaultedList<ItemStack> spells = DefaultedList.ofSize(safeCapacity, ItemStack.EMPTY);
         NbtCompound nbt = wandStack.getNbt();
-        if (nbt == null || !nbt.contains(SPELLS_KEY, NbtElement.LIST_TYPE)) {
+        if (nbt == null) {
             return spells;
         }
 
-        NbtList spellList = nbt.getList(SPELLS_KEY, NbtElement.COMPOUND_TYPE);
+        NbtCompound slotData = getSlotData(nbt);
+        if (slotData == null
+            || !NoitaNbtSchema.migrateToCurrent(slotData, NoitaNbtSchema.Kind.WAND_SLOTS)
+            || !NoitaNbtSafety.validateTree(slotData, 16, 2048, NoitaNbtLimits.MAX_WAND_SLOT_ENTRIES)) {
+            return spells;
+        }
+        NbtList spellList = slotData.getList(SLOT_ENTRIES_KEY, NbtElement.COMPOUND_TYPE);
+        if (spellList.size() > NoitaNbtLimits.MAX_WAND_SLOT_ENTRIES
+            || !NoitaNbtSafety.hasUniqueBoundedSlots(spellList, safeCapacity)) {
+            return spells;
+        }
         for (int i = 0; i < spellList.size(); i++) {
             NbtCompound spellNbt = spellList.getCompound(i);
             int slot = spellNbt.getInt(SLOT_KEY);
-            if (slot >= 0 && slot < capacity) {
-                ItemStack spellStack = ItemStack.fromNbt(spellNbt);
-                if (isSpellStack(spellStack)) {
-                    spells.set(slot, spellStack);
+            if (slot >= 0 && slot < safeCapacity) {
+                try {
+                    ItemStack spellStack = ItemStack.fromNbt(spellNbt);
+                    if (isSpellStack(spellStack)) {
+                        spells.set(slot, spellStack);
+                    }
+                } catch (RuntimeException ignored) {
+                    // Invalid item data is ignored rather than crashing an inventory load.
                 }
             }
         }
@@ -132,30 +132,48 @@ public class NoitaWandItem extends Item {
             }
         }
 
+        NbtCompound slotData = new NbtCompound();
+        NoitaNbtSchema.writeCurrentVersion(slotData);
+        slotData.put(SLOT_ENTRIES_KEY, spellList);
         NbtCompound nbt = wandStack.getOrCreateNbt();
-        if (spellList.isEmpty()) {
-            nbt.remove(SPELLS_KEY);
-            return;
-        }
-
-        nbt.put(SPELLS_KEY, spellList);
+        nbt.put(SPELLS_KEY, slotData);
+        nbt.remove(LEGACY_SPELLS_KEY);
     }
 
     public static boolean isSpellStack(ItemStack stack) {
         return stack.getItem() instanceof NoitaSpellItem;
     }
 
-    private static int getLoadedSpellCount(ItemStack stack, int capacity) {
-        int count = 0;
-        for (ItemStack spellStack : getSpellStacks(stack, capacity)) {
-            if (!spellStack.isEmpty()) {
-                count++;
-            }
+    public boolean hasSupportedNbt(ItemStack stack) {
+        NbtCompound nbt = stack.getNbt();
+        if (nbt == null) {
+            return true;
         }
-        return count;
+        if (nbt.contains(TEMPLATE_KEY, NbtElement.COMPOUND_TYPE)
+            && NoitaWandTemplate.tryFromNbt(nbt.getCompound(TEMPLATE_KEY)).isEmpty()) {
+            return false;
+        }
+        NbtCompound slotData = getSlotData(nbt);
+        return slotData == null
+            || (NoitaNbtSchema.migrateToCurrent(slotData, NoitaNbtSchema.Kind.WAND_SLOTS)
+                && NoitaNbtSafety.validateTree(slotData, 16, 2048, NoitaNbtLimits.MAX_WAND_SLOT_ENTRIES));
     }
 
-    private static Text yesNo(boolean value) {
-        return Text.translatable(value ? "tooltip.mc-noita.yes" : "tooltip.mc-noita.no");
+    private static NbtCompound getSlotData(NbtCompound root) {
+        if (root.contains(SPELLS_KEY, NbtElement.COMPOUND_TYPE)) {
+            return root.getCompound(SPELLS_KEY);
+        }
+        if (!root.contains(LEGACY_SPELLS_KEY, NbtElement.LIST_TYPE)) {
+            return null;
+        }
+
+        // v0 stored the entry list directly on the wand root. Move it into the
+        // versioned slot structure before decoding so future migrations stay central.
+        NbtCompound slotData = new NbtCompound();
+        slotData.put(SLOT_ENTRIES_KEY, root.getList(LEGACY_SPELLS_KEY, NbtElement.COMPOUND_TYPE).copy());
+        root.put(SPELLS_KEY, slotData);
+        root.remove(LEGACY_SPELLS_KEY);
+        return slotData;
     }
+
 }

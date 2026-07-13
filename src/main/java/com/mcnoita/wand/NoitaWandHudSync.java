@@ -1,6 +1,7 @@
 package com.mcnoita.wand;
 
 import com.mcnoita.network.ModNetworking;
+import com.mcnoita.network.NoitaNetworkProtocol;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.fabricmc.fabric.api.networking.v1.PacketByteBufs;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
@@ -22,6 +23,7 @@ public final class NoitaWandHudSync {
     private static void sync(ServerPlayerEntity player) {
         NoitaWandCaster.CastHudState state = NoitaWandCaster.getHudState(player);
         PacketByteBuf buf = PacketByteBufs.create();
+        buf.writeVarInt(NoitaNetworkProtocol.VERSION);
         buf.writeVarInt(state.mode());
         buf.writeVarInt(state.progressTicks());
         buf.writeVarInt(state.totalTicks());

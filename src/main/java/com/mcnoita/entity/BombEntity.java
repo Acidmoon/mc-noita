@@ -2,6 +2,9 @@ package com.mcnoita.entity;
 
 import com.mcnoita.spell.NoitaProjectileBehavior;
 import com.mcnoita.spell.NoitaProjectilePayload;
+import com.mcnoita.persistence.NoitaNbtLimits;
+import com.mcnoita.persistence.NoitaNbtSafety;
+import com.mcnoita.persistence.NoitaNbtSchema;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
@@ -223,6 +226,7 @@ public class BombEntity extends LivingEntity {
     @Override
     public void writeCustomDataToNbt(NbtCompound nbt) {
         super.writeCustomDataToNbt(nbt);
+        NoitaNbtSchema.writeCurrentVersion(nbt);
         nbt.putString(ITEM_PATH_KEY, this.itemPath);
         nbt.putString(BEHAVIOR_KEY, this.behavior.name());
         nbt.putFloat(EXPLOSION_RADIUS_KEY, this.explosionRadius);
@@ -236,6 +240,12 @@ public class BombEntity extends LivingEntity {
     @Override
     public void readCustomDataFromNbt(NbtCompound nbt) {
         super.readCustomDataFromNbt(nbt);
+        if (!NoitaNbtSchema.migrateToCurrent(nbt, NoitaNbtSchema.Kind.ENTITY)
+            || !NoitaNbtSafety.validateTree(nbt, NoitaNbtLimits.MAX_ENTITY_NBT_DEPTH, NoitaNbtLimits.MAX_ENTITY_NBT_NODES, NoitaNbtLimits.MAX_PAYLOAD_CHILDREN)
+            || !NoitaNbtSafety.hasValidEnumIfPresent(nbt, BEHAVIOR_KEY, NoitaProjectileBehavior.class)) {
+            this.discard();
+            return;
+        }
         if (nbt.contains(ITEM_PATH_KEY, NbtElement.STRING_TYPE)) {
             this.itemPath = nbt.getString(ITEM_PATH_KEY);
         }

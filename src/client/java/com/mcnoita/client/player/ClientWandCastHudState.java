@@ -15,11 +15,13 @@ public final class ClientWandCastHudState {
     }
 
     public static void set(int mode, int progressTicks, int totalTicks, float currentMana, int manaMax) {
-        ClientWandCastHudState.mode = mode;
-        ClientWandCastHudState.progressTicks = Math.max(0, progressTicks);
-        ClientWandCastHudState.totalTicks = Math.max(1, totalTicks);
-        ClientWandCastHudState.currentMana = Math.max(0.0f, currentMana);
-        ClientWandCastHudState.manaMax = Math.max(0, manaMax);
+        ClientWandCastHudState.mode = Math.max(MODE_EMPTY, Math.min(MODE_RECHARGE, mode));
+        ClientWandCastHudState.totalTicks = Math.max(1, Math.min(72_000, totalTicks));
+        ClientWandCastHudState.progressTicks = Math.max(0, Math.min(ClientWandCastHudState.totalTicks, progressTicks));
+        ClientWandCastHudState.manaMax = Math.max(0, Math.min(1_000_000, manaMax));
+        ClientWandCastHudState.currentMana = Float.isFinite(currentMana)
+            ? Math.max(0.0f, Math.min(ClientWandCastHudState.manaMax, currentMana))
+            : 0.0f;
     }
 
     public static int getMode() {

@@ -2,6 +2,7 @@ package com.mcnoita.client;
 
 import com.mcnoita.client.hud.NoitaHoverHud;
 import com.mcnoita.client.hud.NoitaWandCastHud;
+import com.mcnoita.client.item.NoitaTooltipEvents;
 import com.mcnoita.client.network.ClientHoverInputEvents;
 import com.mcnoita.client.network.ClientHoverNetworking;
 import com.mcnoita.client.network.ClientWandCastHudNetworking;
@@ -35,6 +36,7 @@ public class MCNoitaClient implements ClientModInitializer {
         ClientHoverNetworking.register();
         ClientWandCastHudNetworking.register();
         ClientWandCastEvents.register();
+        NoitaTooltipEvents.register();
         NoitaHoverHud.register();
         NoitaWandCastHud.register();
     }

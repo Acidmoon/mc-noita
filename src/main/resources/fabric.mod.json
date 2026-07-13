@@ -23,7 +23,10 @@
     ]
   },
   "mixins": [
-    "mc-noita.client.mixins.json"
+    {
+      "config": "mc-noita.client.mixins.json",
+      "environment": "client"
+    }
   ],
   "depends": {
     "fabricloader": ">=0.15.11",

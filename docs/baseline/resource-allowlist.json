@@ -1,0 +1,13 @@
+{
+  "non_spell_models": [
+    "bomb_death_trigger.json",
+    "light_bullet.json",
+    "starter_wand.json"
+  ],
+  "non_spell_textures": [],
+  "notes": {
+    "bomb_death_trigger.json": "Historical model retained while the registered death-trigger bomb uses a different item path.",
+    "light_bullet.json": "Historical alias model retained while the registered item path is spark_bolt.",
+    "starter_wand.json": "Wand model, not a spell model."
+  }
+}
