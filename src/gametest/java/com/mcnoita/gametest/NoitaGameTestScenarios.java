@@ -3,11 +3,13 @@ package com.mcnoita.gametest;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.mcnoita.catalog.SpellCatalogService;
 import com.mcnoita.entity.BombEntity;
 import com.mcnoita.entity.ModEntities;
 import com.mcnoita.entity.SparkBoltProjectileEntity;
 import com.mcnoita.item.ModItems;
 import com.mcnoita.item.NoitaWandItem;
+import com.mcnoita.screen.NoitaWandScreenHandler;
 import com.mcnoita.spell.action.SpellCatalog;
 import com.mcnoita.spell.NoitaExecutionIdentity;
 import com.mcnoita.spell.NoitaPayloadPlan;
@@ -17,6 +19,9 @@ import com.mcnoita.spell.NoitaSpellTriggerMode;
 import com.mcnoita.spell.NoitaTriggerPlan;
 import com.mcnoita.spell.NoitaTriggerReleasePolicy;
 import com.mcnoita.spell.plan.ResolvedCast;
+import com.mcnoita.spell.server.budget.BudgetKind;
+import com.mcnoita.spell.server.budget.BudgetLimits;
+import com.mcnoita.spell.server.budget.SpellBudgetManager;
 import com.mcnoita.spell.trigger.TriggerRuntimeBudget;
 import com.mcnoita.wand.NoitaWandCaster;
 import com.mcnoita.wand.NoitaWandTemplate;
@@ -25,14 +30,24 @@ import com.mcnoita.wand.adapter.MinecraftTimeAdapter;
 import com.mcnoita.wand.adapter.MinecraftWandAdapter;
 import com.mcnoita.wand.eval.WandCastEvaluator;
 import com.mcnoita.wand.model.NoitaDuration;
+import com.mcnoita.wand.server.CastIntent;
+import com.mcnoita.wand.server.CastResult;
+import com.mcnoita.wand.server.CastTransaction;
+import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.io.IOException;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import net.minecraft.block.Blocks;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.mob.ZombieEntity;
 import net.fabricmc.fabric.api.gametest.v1.FabricGameTest;
 import net.minecraft.item.ItemStack;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtIo;
 import net.minecraft.test.GameTest;
 import net.minecraft.test.TestContext;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -75,7 +90,9 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         "gamma_call_without_target_charge",
         "projectile_payload_save_reload",
         "legacy_runtime_payload_receives_execution_identity",
-        "g02_two_round_real_wand_matches_evaluator"
+        "g02_two_round_real_wand_matches_evaluator",
+        "g05_transaction_budget_rejection_preserves_wand",
+        "g05_open_editor_rejects_cast"
     );
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
@@ -572,14 +589,14 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         );
         NoitaWandCaster.cast(player);
         MinecraftWandAdapter.LoadedWand afterFirst = MinecraftWandAdapter.read(
-            wand, ModItems.STARTER_WAND, player.getServerWorld().getTime(), 0L
+            player.getMainHandStack(), ModItems.STARTER_WAND, player.getServerWorld().getTime(), 0L
         );
         assertMatches(context, expectedFirst, afterFirst, "first cast");
         context.assertTrue(projectilesOwnedBy(context, player) == 2, "first cast must spawn two real projectile entities");
 
         context.runAtTick(4, () -> {
             MinecraftWandAdapter.LoadedWand secondInput = MinecraftWandAdapter.read(
-                wand, ModItems.STARTER_WAND, player.getServerWorld().getTime(), 0L
+                player.getMainHandStack(), ModItems.STARTER_WAND, player.getServerWorld().getTime(), 0L
             );
             ResolvedCast expectedSecond = new WandCastEvaluator().evaluate(
                 secondInput.definition(), secondInput.state(), catalog, secondInput.elapsed(), 0L
@@ -587,7 +604,7 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
             context.assertTrue(NoitaWandCaster.canCast(player), "second cast must be ready after the converted cast-delay window");
             NoitaWandCaster.cast(player);
             MinecraftWandAdapter.LoadedWand afterSecond = MinecraftWandAdapter.read(
-                wand, ModItems.STARTER_WAND, player.getServerWorld().getTime(), 0L
+                player.getMainHandStack(), ModItems.STARTER_WAND, player.getServerWorld().getTime(), 0L
             );
             assertMatches(context, expectedSecond, afterSecond, "second cast");
             context.assertTrue(projectilesOwnedBy(context, player) == 3,
@@ -604,6 +621,59 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         });
     }
 
+    /**
+     * A central reservation failure occurs after pure evaluation but before any
+     * wand write. The source ItemStack therefore stays byte-identical and the
+     * execution sink never receives a partially accepted plan.
+     */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 5)
+    public void g05TransactionBudgetRejectionPreservesWand(TestContext context) {
+        context.setTime(0);
+        ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
+        player.setStackInHand(Hand.MAIN_HAND, configuredThreeBoltWand());
+        byte[] before = serializedStackNbt(player.getMainHandStack());
+        AtomicBoolean executionEntered = new AtomicBoolean();
+
+        CastTransaction transaction = new CastTransaction(
+            new WandCastEvaluator(), SpellCatalogService.getInstance(), new SpellBudgetManager(rejectEntityBudget()),
+            (ignoredPlayer, ignoredPlan, ignoredExecutionId, ignoredReservation) -> executionEntered.set(true)
+        );
+        CastResult result = transaction.cast(player, new CastIntent(Hand.MAIN_HAND, player.getInventory().selectedSlot, 41L));
+
+        context.assertTrue(result.status() == CastResult.Status.BUDGET_REJECTED,
+            "an entity quota of zero must reject the prepared Spark Bolt plan before commit");
+        context.assertTrue(result.budgetDiagnostic() != null, "budget rejection must retain a structured diagnostic");
+        context.assertTrue(!executionEntered.get(), "a rejected transaction must never enter the executor");
+        context.assertTrue(Arrays.equals(before, serializedStackNbt(player.getMainHandStack())),
+            "budget rejection must preserve the complete wand NBT byte-for-byte");
+        context.complete();
+    }
+
+    /** GUI editing and cast packets are mutually exclusive transaction states. */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 5)
+    public void g05OpenEditorRejectsCast(TestContext context) {
+        context.setTime(0);
+        ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
+        player.setStackInHand(Hand.MAIN_HAND, configuredThreeBoltWand());
+        player.currentScreenHandler = new NoitaWandScreenHandler(99, player.getInventory(), Hand.MAIN_HAND);
+        byte[] before = serializedStackNbt(player.getMainHandStack());
+        AtomicBoolean executionEntered = new AtomicBoolean();
+
+        CastTransaction transaction = new CastTransaction(
+            new WandCastEvaluator(), SpellCatalogService.getInstance(), new SpellBudgetManager(BudgetLimits.unlimited()),
+            (ignoredPlayer, ignoredPlan, ignoredExecutionId, ignoredReservation) -> executionEntered.set(true)
+        );
+        CastResult result = transaction.cast(player, new CastIntent(Hand.MAIN_HAND, player.getInventory().selectedSlot, 42L));
+
+        context.assertTrue(result.status() == CastResult.Status.VALIDATION_REJECTED,
+            "a cast packet must be rejected while a non-player screen handler owns the inventory");
+        context.assertTrue(!executionEntered.get(), "an editor-rejected cast must not enter evaluation or execution");
+        context.assertTrue(Arrays.equals(before, serializedStackNbt(player.getMainHandStack())),
+            "editor rejection must preserve the complete wand NBT byte-for-byte");
+        player.currentScreenHandler = player.playerScreenHandler;
+        context.complete();
+    }
+
     private static void completeFixedFixture(TestContext context) {
         context.setTime(0);
         context.runAtTick(20, () -> {
@@ -611,6 +681,21 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
             context.killAllEntities();
             context.complete();
         });
+    }
+
+    private static BudgetLimits rejectEntityBudget() {
+        BudgetLimits.ScopeLimits unlimited = BudgetLimits.ScopeLimits.unlimited();
+        return new BudgetLimits(Map.of(BudgetKind.AUTHORITATIVE_ENTITIES, 0L), unlimited, unlimited, unlimited, unlimited, 20L);
+    }
+
+    private static byte[] serializedStackNbt(ItemStack stack) {
+        try (ByteArrayOutputStream bytes = new ByteArrayOutputStream(); DataOutputStream output = new DataOutputStream(bytes)) {
+            NbtIo.writeCompound(stack.writeNbt(new NbtCompound()), output);
+            output.flush();
+            return bytes.toByteArray();
+        } catch (IOException exception) {
+            throw new AssertionError("ItemStack NBT serialization failed", exception);
+        }
     }
 
     private static SparkBoltProjectileEntity spawnTrigger(
@@ -807,7 +892,7 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
     @Test
     @Tag("gametest")
     void fixtureCatalogCoversTheG02WorldScenario() {
-        assertEquals(25, SCENARIOS.size());
+        assertEquals(27, SCENARIOS.size());
         assertTrue(SCENARIOS.contains("starter_wand_server_authority"));
         assertTrue(SCENARIOS.contains("trigger_payload_block_hit_release"));
         assertTrue(SCENARIOS.contains("trigger_payload_entity_hit_release"));
@@ -826,5 +911,7 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         assertTrue(SCENARIOS.contains("projectile_payload_save_reload"));
         assertTrue(SCENARIOS.contains("legacy_runtime_payload_receives_execution_identity"));
         assertTrue(SCENARIOS.contains("g02_two_round_real_wand_matches_evaluator"));
+        assertTrue(SCENARIOS.contains("g05_transaction_budget_rejection_preserves_wand"));
+        assertTrue(SCENARIOS.contains("g05_open_editor_rejects_cast"));
     }
 }

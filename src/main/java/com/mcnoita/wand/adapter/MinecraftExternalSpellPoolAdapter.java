@@ -25,12 +25,17 @@ public final class MinecraftExternalSpellPoolAdapter {
             }
             ItemStack candidateWand = player.getInventory().getStack(slot);
             if (candidateWand == activeWand || candidateWand.isEmpty()
-                || !(candidateWand.getItem() instanceof NoitaWandItem wandItem)
-                || !wandItem.hasSupportedNbt(candidateWand)) {
+                || !(candidateWand.getItem() instanceof NoitaWandItem wandItem)) {
                 continue;
             }
-            int capacity = wandItem.getTemplate(candidateWand).capacity();
-            for (ItemStack spellStack : NoitaWandItem.getSpellStacks(candidateWand, capacity)) {
+            // Slot migration and validation may normalize legacy NBT. Zeta's
+            // rejected evaluation must never write another hotbar wand.
+            ItemStack candidateCopy = candidateWand.copy();
+            if (!wandItem.hasSupportedNbt(candidateCopy)) {
+                continue;
+            }
+            int capacity = wandItem.getTemplate(candidateCopy).capacity();
+            for (ItemStack spellStack : NoitaWandItem.getSpellStacks(candidateCopy, capacity)) {
                 if (spellIds.size() >= MAX_EXTERNAL_CANDIDATES) {
                     break;
                 }

@@ -2,6 +2,7 @@ package com.mcnoita.screen;
 
 import com.mcnoita.item.NoitaWandItem;
 import com.mcnoita.wand.NoitaWandTemplate;
+import com.mcnoita.wand.adapter.MinecraftWandAdapter;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.inventory.Inventories;
@@ -177,6 +178,7 @@ public class NoitaWandScreenHandler extends ScreenHandler {
     private void saveSpells() {
         if (!this.player.getWorld().isClient && canUse(this.player)) {
             NoitaWandItem.setSpellStacks(this.wandStack, this.spellStacks);
+            MinecraftWandAdapter.incrementStateRevision(this.wandStack);
         }
     }
 

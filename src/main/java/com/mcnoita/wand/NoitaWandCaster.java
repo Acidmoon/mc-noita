@@ -1,68 +1,49 @@
 package com.mcnoita.wand;
 
-import com.mcnoita.catalog.SpellCatalogService;
 import com.mcnoita.item.NoitaWandItem;
-import com.mcnoita.spell.action.SpellCatalog;
-import com.mcnoita.spell.exec.MinecraftEffectExecutor;
-import com.mcnoita.spell.plan.ResolvedCast;
 import com.mcnoita.wand.adapter.MinecraftWandAdapter;
-import com.mcnoita.wand.adapter.MinecraftExternalSpellPoolAdapter;
-import com.mcnoita.wand.eval.WandCastEvaluator;
+import com.mcnoita.wand.server.CastIntent;
+import com.mcnoita.wand.server.CastResult;
+import com.mcnoita.wand.server.CastTransaction;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Hand;
 
 /**
- * Server orchestration boundary. It validates and converts the held ItemStack,
- * commits a successful pure result, then executes its already-frozen plan.
+ * Compatibility facade for the formal server transaction coordinator. No direct
+ * cast path may mutate a wand before validate/evaluate/reserve/revalidate pass.
  */
 public final class NoitaWandCaster {
-    private static final WandCastEvaluator EVALUATOR = new WandCastEvaluator();
+    private static final CastTransaction TRANSACTION = CastTransaction.createProduction();
 
     private NoitaWandCaster() {
     }
 
     public static boolean canCast(ServerPlayerEntity player) {
-        ItemStack wandStack = player.getMainHandStack();
-        return wandStack.getItem() instanceof NoitaWandItem wandItem
-            && wandItem.hasSupportedNbt(wandStack)
-            && MinecraftWandAdapter.canCast(wandStack, player.getServerWorld().getTime());
+        return player != null && TRANSACTION.canCast(player, CastIntent.mainHand(player.getInventory().selectedSlot));
     }
 
-    public static void cast(ServerPlayerEntity player) {
-        ItemStack wandStack = player.getStackInHand(Hand.MAIN_HAND);
-        if (!(wandStack.getItem() instanceof NoitaWandItem wandItem) || !wandItem.hasSupportedNbt(wandStack)) {
-            return;
-        }
-        long now = player.getServerWorld().getTime();
-        if (!MinecraftWandAdapter.canCast(wandStack, now)) {
-            return;
-        }
+    public static CastResult cast(ServerPlayerEntity player) {
+        return cast(player, CastIntent.SERVER_INITIATED_SEQUENCE);
+    }
 
-        long randomSeed = player.getRandom().nextLong();
-        MinecraftWandAdapter.LoadedWand loaded = MinecraftWandAdapter.read(wandStack, wandItem, now, randomSeed);
-        if (loaded == null) {
-            return;
+    /** Existing packet fields may supply their sequence without changing the wire format. */
+    public static CastResult cast(ServerPlayerEntity player, long sequence) {
+        if (player == null) {
+            return CastResult.rejected(CastResult.Status.VALIDATION_REJECTED, "player is missing", null, null, null);
         }
-        SpellCatalog catalog = SpellCatalogService.getInstance().current().catalog();
-        ResolvedCast resolved = EVALUATOR.evaluate(loaded.definition(), loaded.state(), catalog, loaded.elapsed(),
-            randomSeed, MinecraftExternalSpellPoolAdapter.fromOtherHotbarWands(player, wandStack));
-        if (resolved.status() != ResolvedCast.Status.ACCEPTED) {
-            return;
-        }
-
-        // State is durable before any entity allocation. Executor failures never roll it back.
-        MinecraftWandAdapter.write(wandStack, loaded, resolved.nextState(), now);
-        MinecraftEffectExecutor.execute(player, resolved);
+        return TRANSACTION.cast(player, new CastIntent(Hand.MAIN_HAND, player.getInventory().selectedSlot, sequence));
     }
 
     public static CastHudState getHudState(ServerPlayerEntity player) {
         ItemStack wandStack = player.getStackInHand(Hand.MAIN_HAND);
-        if (!(wandStack.getItem() instanceof NoitaWandItem wandItem) || !wandItem.hasSupportedNbt(wandStack)) {
+        // HUD polling must never trigger legacy NBT migration on the real
+        // stack: that would change a transaction binding without a cast.
+        if (!(wandStack.getItem() instanceof NoitaWandItem wandItem) || !wandItem.hasSupportedNbt(wandStack.copy())) {
             return CastHudState.empty();
         }
         long now = player.getServerWorld().getTime();
-        MinecraftWandAdapter.LoadedWand loaded = MinecraftWandAdapter.read(wandStack, wandItem, now, 0L);
+        MinecraftWandAdapter.LoadedWand loaded = MinecraftWandAdapter.readReadOnly(wandStack, wandItem, now, 0L);
         if (loaded == null) {
             return CastHudState.empty();
         }

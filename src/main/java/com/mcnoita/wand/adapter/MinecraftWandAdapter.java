@@ -13,16 +13,30 @@ import com.mcnoita.wand.model.NoitaDuration;
 import com.mcnoita.wand.model.SpellCardState;
 import com.mcnoita.wand.model.WandDefinition;
 import com.mcnoita.wand.model.WandState;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NbtByte;
+import net.minecraft.nbt.NbtByteArray;
 import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtDouble;
 import net.minecraft.nbt.NbtElement;
+import net.minecraft.nbt.NbtFloat;
 import net.minecraft.nbt.NbtInt;
+import net.minecraft.nbt.NbtIntArray;
 import net.minecraft.nbt.NbtList;
+import net.minecraft.nbt.NbtLong;
+import net.minecraft.nbt.NbtLongArray;
+import net.minecraft.nbt.NbtShort;
+import net.minecraft.nbt.NbtString;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.collection.DefaultedList;
 
@@ -98,6 +112,16 @@ public final class MinecraftWandAdapter {
         return new LoadedWand(definition, state, spellStacks, spellsHash, elapsed);
     }
 
+    /**
+     * Legacy migration may initialize NBT while decoding. HUD, validation, and
+     * transaction revalidation therefore use this copy-only entry point until a
+     * cast has been explicitly committed.
+     */
+    public static LoadedWand readReadOnly(ItemStack wandStack, NoitaWandItem wandItem, long now, long randomSeed) {
+        Objects.requireNonNull(wandStack, "wandStack");
+        return read(wandStack.copy(), Objects.requireNonNull(wandItem, "wandItem"), now, randomSeed);
+    }
+
     public static void write(ItemStack wandStack, LoadedWand loaded, WandState next, long now) {
         NbtCompound persisted = getOrCreateCastState(wandStack);
         if (persisted == null) {
@@ -122,6 +146,158 @@ public final class MinecraftWandAdapter {
     public static boolean canCast(ItemStack wandStack, long now) {
         NbtCompound state = getOrCreateCastState(wandStack);
         return state != null && state.getLong(RECHARGE_END_TICK_KEY) <= now && state.getLong(NEXT_CAST_TICK_KEY) <= now;
+    }
+
+    /** Same cooldown check as {@link #canCast(ItemStack, long)} without mutating the source stack. */
+    public static boolean canCastReadOnly(ItemStack wandStack, long now) {
+        Objects.requireNonNull(wandStack, "wandStack");
+        return canCast(wandStack.copy(), now);
+    }
+
+    /**
+     * Reads only the persisted revision used to reject stale C2S intents. This
+     * deliberately does not invoke schema migration: packet and HUD polling
+     * must never rewrite a live stack before a transaction commits.
+     */
+    public static long stateRevisionReadOnly(ItemStack wandStack) {
+        Objects.requireNonNull(wandStack, "wandStack");
+        NbtCompound root = wandStack.getNbt();
+        if (root == null || !root.contains(CAST_STATE_KEY, NbtElement.COMPOUND_TYPE)) {
+            return 0L;
+        }
+        return Math.max(0L, root.getCompound(CAST_STATE_KEY).getLong(REVISION_KEY));
+    }
+
+    /**
+     * Returns a SHA-256 digest of the exact logical NBT tree without invoking
+     * legacy migration or allocating a writable tag on the source stack. Keys
+     * are sorted recursively because {@link NbtCompound} insertion order is
+     * not a valid server binding contract.
+     */
+    public static String canonicalNbtStateHash(NbtCompound nbt) {
+        MessageDigest digest = sha256();
+        if (nbt == null) {
+            updateByte(digest, (byte) 0);
+        } else {
+            updateByte(digest, (byte) 1);
+            appendCanonicalNbt(digest, nbt);
+        }
+        return HexFormat.of().formatHex(digest.digest());
+    }
+
+    /** GUI edits invalidate prepared cast bindings even when spell IDs remain in the same slots. */
+    public static long incrementStateRevision(ItemStack wandStack) {
+        NbtCompound state = getOrCreateCastState(Objects.requireNonNull(wandStack, "wandStack"));
+        if (state == null) {
+            throw new IllegalStateException("wand cast state failed persistence validation");
+        }
+        long current = Math.max(0L, state.getLong(REVISION_KEY));
+        long next = current == Long.MAX_VALUE ? Long.MAX_VALUE : current + 1L;
+        state.putLong(REVISION_KEY, next);
+        return next;
+    }
+
+    private static MessageDigest sha256() {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException exception) {
+            // SHA-256 is mandatory for every supported Java runtime. Keeping
+            // this failure explicit prevents a weaker implicit fallback from
+            // silently weakening a server-side cast binding.
+            throw new IllegalStateException("SHA-256 is unavailable", exception);
+        }
+    }
+
+    private static void appendCanonicalNbt(MessageDigest digest, NbtElement element) {
+        updateByte(digest, element.getType());
+        switch (element.getType()) {
+            case NbtElement.END_TYPE -> {
+                // End is only a structural marker and carries no payload.
+            }
+            case NbtElement.BYTE_TYPE -> updateByte(digest, ((NbtByte) element).byteValue());
+            case NbtElement.SHORT_TYPE -> updateShort(digest, ((NbtShort) element).shortValue());
+            case NbtElement.INT_TYPE -> updateInt(digest, ((NbtInt) element).intValue());
+            case NbtElement.LONG_TYPE -> updateLong(digest, ((NbtLong) element).longValue());
+            case NbtElement.FLOAT_TYPE -> updateInt(digest, Float.floatToRawIntBits(((NbtFloat) element).floatValue()));
+            case NbtElement.DOUBLE_TYPE -> updateLong(digest, Double.doubleToRawLongBits(((NbtDouble) element).doubleValue()));
+            case NbtElement.BYTE_ARRAY_TYPE -> appendByteArray(digest, ((NbtByteArray) element).getByteArray());
+            case NbtElement.STRING_TYPE -> updateString(digest, ((NbtString) element).asString());
+            case NbtElement.LIST_TYPE -> appendList(digest, (NbtList) element);
+            case NbtElement.COMPOUND_TYPE -> appendCompound(digest, (NbtCompound) element);
+            case NbtElement.INT_ARRAY_TYPE -> appendIntArray(digest, ((NbtIntArray) element).getIntArray());
+            case NbtElement.LONG_ARRAY_TYPE -> appendLongArray(digest, ((NbtLongArray) element).getLongArray());
+            default -> throw new IllegalArgumentException("unsupported NBT element type " + element.getType());
+        }
+    }
+
+    private static void appendCompound(MessageDigest digest, NbtCompound compound) {
+        List<String> keys = new ArrayList<>(compound.getKeys());
+        Collections.sort(keys);
+        updateInt(digest, keys.size());
+        for (String key : keys) {
+            updateString(digest, key);
+            appendCanonicalNbt(digest, Objects.requireNonNull(compound.get(key), "compound element"));
+        }
+    }
+
+    private static void appendList(MessageDigest digest, NbtList list) {
+        updateByte(digest, list.getHeldType());
+        updateInt(digest, list.size());
+        for (int index = 0; index < list.size(); index++) {
+            appendCanonicalNbt(digest, list.get(index));
+        }
+    }
+
+    private static void appendByteArray(MessageDigest digest, byte[] values) {
+        updateInt(digest, values.length);
+        digest.update(values);
+    }
+
+    private static void appendIntArray(MessageDigest digest, int[] values) {
+        updateInt(digest, values.length);
+        for (int value : values) {
+            updateInt(digest, value);
+        }
+    }
+
+    private static void appendLongArray(MessageDigest digest, long[] values) {
+        updateInt(digest, values.length);
+        for (long value : values) {
+            updateLong(digest, value);
+        }
+    }
+
+    private static void updateString(MessageDigest digest, String value) {
+        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        updateInt(digest, bytes.length);
+        digest.update(bytes);
+    }
+
+    private static void updateByte(MessageDigest digest, byte value) {
+        digest.update(value);
+    }
+
+    private static void updateShort(MessageDigest digest, short value) {
+        updateByte(digest, (byte) (value >>> 8));
+        updateByte(digest, (byte) value);
+    }
+
+    private static void updateInt(MessageDigest digest, int value) {
+        updateByte(digest, (byte) (value >>> 24));
+        updateByte(digest, (byte) (value >>> 16));
+        updateByte(digest, (byte) (value >>> 8));
+        updateByte(digest, (byte) value);
+    }
+
+    private static void updateLong(MessageDigest digest, long value) {
+        updateByte(digest, (byte) (value >>> 56));
+        updateByte(digest, (byte) (value >>> 48));
+        updateByte(digest, (byte) (value >>> 40));
+        updateByte(digest, (byte) (value >>> 32));
+        updateByte(digest, (byte) (value >>> 24));
+        updateByte(digest, (byte) (value >>> 16));
+        updateByte(digest, (byte) (value >>> 8));
+        updateByte(digest, (byte) value);
     }
 
     public static NbtCompound getOrCreateCastState(ItemStack wandStack) {
