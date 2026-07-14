@@ -1,4 +1,4 @@
-# G00-G03 Test Facilities
+# G00-G04 Test Facilities
 
 ## Commands
 
@@ -32,6 +32,15 @@ Run the G03 gate from the repository root:
 GameTest fixtures, the headless Fabric GameTest server, dedicated-server smoke,
 and the production build.
 
+Run the G04 gate from the repository root:
+
+```powershell
+.\gradlew.bat verifyG04
+```
+
+`verifyG04` adds pure invocation/trace fixtures and real Add Trigger/Divide
+server scenarios while retaining every G03 lifecycle and persistence check.
+
 ## JUnit Tags
 
 - `characterization` records observed current behavior and catalog facts.
@@ -49,7 +58,7 @@ release decisions, and frozen payload serialization.
 ## GameTest Layout
 
 `src/gametest` is a test-only Fabric mod and is excluded from the release JAR.
-It declares twenty-five fixed-tick, empty-structure scenarios for Starter Wand,
+It declares twenty-seven fixed-tick, empty-structure scenarios for Starter Wand,
 Spark Bolt, Bomb, Double Spell, Damage Plus, Spark/Bomb Trigger block/entity
 hits, sequential Piercing entity Hits, nested Trigger release, landed MINE
 proximity Hit, 0/1-tick Timer release, Piercing collision plus same-tick Timer
@@ -60,6 +69,10 @@ machine. The G02 scenario
 creates a real server player, equips a three-Spark-Bolt Spells/Cast=2 wand,
 casts twice, compares persisted state against pure evaluation, and checks the
 actual 2 then 1 projectile spawn result.
+
+G04 adds a production-wand Add Trigger collision test that releases a frozen
+G03 payload after a real block hit, plus a nested Divide fixture that requires
+the server tick to advance and the authoritative entity ceiling to hold.
 
 G03 replaces the Trigger placeholder with real entity spawning and collision
 fixtures. Unit tests additionally cover collision-key de-duplication, Timer

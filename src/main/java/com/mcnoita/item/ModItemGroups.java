@@ -28,6 +28,19 @@ public final class ModItemGroups {
                 entries.add(ModItems.WAND_REFRESH);
                 entries.add(ModItems.ALPHA);
                 entries.add(ModItems.GAMMA);
+                entries.add(ModItems.TAU);
+                entries.add(ModItems.OMEGA);
+                entries.add(ModItems.MU);
+                entries.add(ModItems.PHI);
+                entries.add(ModItems.SIGMA);
+                entries.add(ModItems.ZETA);
+                entries.add(ModItems.DIVIDE_2);
+                entries.add(ModItems.DIVIDE_3);
+                entries.add(ModItems.DIVIDE_4);
+                entries.add(ModItems.DIVIDE_10);
+                entries.add(ModItems.ADD_TRIGGER);
+                entries.add(ModItems.ADD_TIMER);
+                entries.add(ModItems.ADD_DEATH_TRIGGER);
             })
             .build()
     );

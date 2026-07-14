@@ -443,6 +443,47 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
     public void gammaCallWithoutTargetCharge(TestContext context) { completeFixedFixture(context); }
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void g04AddTriggerRealWandReleasesFrozenPayload(TestContext context) {
+        context.setTime(0);
+        ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
+        player.setPosition(context.getAbsolute(new Vec3d(3.4, 2.0, 5.5)));
+        player.setYaw(-90.0f);
+        player.setPitch(0.0f);
+        context.setBlockState(new BlockPos(8, 3, 5), Blocks.STONE);
+        ItemStack wand = configuredG04Wand(ModItems.ADD_TRIGGER, ModItems.LIGHT_BULLET, ModItems.LIGHT_BULLET);
+        player.setStackInHand(Hand.MAIN_HAND, wand);
+
+        NoitaWandCaster.cast(player);
+        context.assertTrue(projectilesOwnedBy(context, player) == 1,
+            "Add Trigger evaluation must spawn one parent before collision");
+        context.runAtTick(8, () -> {
+            context.assertTrue(projectilesOwnedBy(context, player) == 1,
+                "the parent must be replaced by exactly one frozen payload after the real block hit; actual="
+                    + projectilesOwnedBy(context, player));
+            context.killAllEntities();
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    public void g04NestedDivideStaysWithinTickAndEntityBudgets(TestContext context) {
+        context.setTime(0);
+        ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
+        player.setPosition(context.getAbsolute(new Vec3d(3.4, 2.0, 5.5)));
+        player.setStackInHand(Hand.MAIN_HAND, configuredG04Wand(
+            ModItems.DIVIDE_10, ModItems.DIVIDE_4, ModItems.DIVIDE_2, ModItems.LIGHT_BULLET));
+
+        NoitaWandCaster.cast(player);
+        context.runAtTick(5, () -> {
+            context.assertTrue(context.getTick() == 5, "bounded Divide evaluation must not stall the server tick");
+            context.assertTrue(projectilesOwnedBy(context, player) <= 32,
+                "Divide execution must respect the authoritative entity ceiling");
+            context.killAllEntities();
+            context.complete();
+        });
+    }
+
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
     public void projectilePayloadSaveReload(TestContext context) {
         context.setTime(0);
         ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
@@ -704,6 +745,27 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         cards.set(0, new ItemStack(ModItems.LIGHT_BULLET));
         cards.set(1, new ItemStack(ModItems.LIGHT_BULLET));
         cards.set(2, new ItemStack(ModItems.LIGHT_BULLET));
+        NoitaWandItem.setSpellStacks(wand, cards);
+        return wand;
+    }
+
+    private static ItemStack configuredG04Wand(net.minecraft.item.Item... spells) {
+        ItemStack wand = new ItemStack(ModItems.STARTER_WAND);
+        NoitaWandItem.setTemplate(wand, NoitaWandTemplate.builder()
+            .shuffle(false)
+            .spellsPerCast(1)
+            .castDelaySeconds(0.0f)
+            .rechargeTimeSeconds(0.0f)
+            .manaMax(1000)
+            .manaChargeSpeed(0)
+            .capacity(spells.length)
+            .spreadDegrees(0.0f)
+            .speedMultiplier(1.0f)
+            .build());
+        DefaultedList<ItemStack> cards = DefaultedList.ofSize(spells.length, ItemStack.EMPTY);
+        for (int slot = 0; slot < spells.length; slot++) {
+            cards.set(slot, new ItemStack(spells[slot]));
+        }
         NoitaWandItem.setSpellStacks(wand, cards);
         return wand;
     }

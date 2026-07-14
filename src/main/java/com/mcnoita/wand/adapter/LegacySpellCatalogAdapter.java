@@ -10,10 +10,13 @@ import com.mcnoita.spell.NoitaSpellTriggerMode;
 import com.mcnoita.spell.NoitaSpellType;
 import com.mcnoita.spell.action.AddProjectileAction;
 import com.mcnoita.spell.action.BeginTriggerAction;
-import com.mcnoita.spell.action.CallSelection;
 import com.mcnoita.spell.action.CallSpellAction;
+import com.mcnoita.spell.action.AddTriggerToNextProjectileAction;
+import com.mcnoita.spell.action.DivideAction;
 import com.mcnoita.spell.action.DrawAction;
 import com.mcnoita.spell.action.DuplicateHandAction;
+import com.mcnoita.spell.action.GreekCopyAction;
+import com.mcnoita.spell.action.GreekCopyKind;
 import com.mcnoita.spell.action.ModifyShotAction;
 import com.mcnoita.spell.action.RandomSpellAction;
 import com.mcnoita.spell.action.RefreshWandAction;
@@ -23,6 +26,7 @@ import com.mcnoita.spell.action.SpellCategory;
 import com.mcnoita.spell.action.SpellDefinition;
 import com.mcnoita.spell.action.TimingAction;
 import com.mcnoita.spell.action.TimingOperation;
+import com.mcnoita.spell.action.TargetQuery;
 import com.mcnoita.spell.plan.ProjectileDefinition;
 import com.mcnoita.spell.plan.ShotModifier;
 import com.mcnoita.spell.plan.TriggerMode;
@@ -59,8 +63,10 @@ public final class LegacySpellCatalogAdapter {
     private static SpellDefinition adapt(Identifier id, NoitaSpellItem item) {
         NoitaSpellTemplate template = item.getTemplate();
         List<SpellAction> actions = new ArrayList<>();
+        String relatedProjectile = "";
         if (item instanceof NoitaProjectileSpellItem projectileItem) {
             NoitaProjectileSpellSpec spec = projectileItem.getProjectileSpec();
+            relatedProjectile = spec.itemPath();
             if (spec.behavior() == NoitaProjectileBehavior.RANDOM) {
                 actions.add(new RandomSpellAction(category(template.type())));
             } else {
@@ -83,7 +89,9 @@ public final class LegacySpellCatalogAdapter {
         } else {
             addLegacySpecialAction(id.getPath(), template, actions);
         }
-        return new SpellDefinition(id.toString(), category(template.type()), template.manaDrain(), false, actions);
+        return new SpellDefinition(id.toString(), category(template.type()), template.manaDrain(),
+            isRecursiveSpecial(id.getPath()), actions,
+            SpellDefinition.defaultUseConsumptionPolicy(category(template.type())), relatedProjectile);
     }
 
     private static void addLegacySpecialAction(String path, NoitaSpellTemplate template, List<SpellAction> actions) {
@@ -91,7 +99,6 @@ public final class LegacySpellCatalogAdapter {
         double rechargeFrames = template.rechargeTimeSeconds() * NoitaDuration.FRAMES_PER_SECOND;
         switch (path) {
             case "duplicate" -> {
-                actions.add(new TimingAction(castFrames, rechargeFrames));
                 actions.add(new DuplicateHandAction());
             }
             case "wand_refresh" -> {
@@ -100,18 +107,43 @@ public final class LegacySpellCatalogAdapter {
             }
             case "alpha" -> {
                 actions.add(new TimingAction(castFrames, rechargeFrames));
-                actions.add(new CallSpellAction(CallSelection.FIRST_AVAILABLE));
+                actions.add(new CallSpellAction(TargetQuery.alpha()));
             }
             case "gamma" -> {
                 actions.add(new TimingAction(castFrames, rechargeFrames));
-                actions.add(new CallSpellAction(CallSelection.LAST_AVAILABLE));
+                actions.add(new CallSpellAction(TargetQuery.gamma()));
             }
+            case "tau" -> actions.addAll(List.of(new TimingAction(35.0, 0.0),
+                new GreekCopyAction(GreekCopyKind.TAU)));
+            case "omega" -> actions.addAll(List.of(new TimingAction(50.0, 0.0),
+                new GreekCopyAction(GreekCopyKind.OMEGA)));
+            case "mu" -> actions.addAll(List.of(new TimingAction(50.0, 0.0),
+                new GreekCopyAction(GreekCopyKind.MU)));
+            case "phi" -> actions.addAll(List.of(new TimingAction(50.0, 0.0),
+                new GreekCopyAction(GreekCopyKind.PHI)));
+            case "sigma" -> actions.addAll(List.of(new TimingAction(30.0, 0.0),
+                new GreekCopyAction(GreekCopyKind.SIGMA)));
+            case "zeta" -> actions.add(new GreekCopyAction(GreekCopyKind.ZETA));
+            case "divide_2" -> actions.add(new DivideAction(2, 5, 20.0, 0.0, -0.2, -5.0, 5.0));
+            case "divide_3" -> actions.add(new DivideAction(3, 4, 35.0, 0.0, -0.4, -10.0, 5.0));
+            case "divide_4" -> actions.add(new DivideAction(4, 4, 50.0, 0.0, -0.6, -20.0, 5.0));
+            case "divide_10" -> actions.add(new DivideAction(10, 3, 80.0, 20.0, -1.5, -40.0, 5.0));
+            case "add_trigger" -> actions.add(new AddTriggerToNextProjectileAction(TriggerMode.HIT));
+            case "add_timer" -> actions.add(new AddTriggerToNextProjectileAction(TriggerMode.TIMER));
+            case "add_death_trigger" -> actions.add(new AddTriggerToNextProjectileAction(TriggerMode.EXPIRATION));
             default -> {
                 if (castFrames != 0.0 || rechargeFrames != 0.0) {
                     actions.add(new TimingAction(castFrames, rechargeFrames));
                 }
             }
         }
+    }
+
+    private static boolean isRecursiveSpecial(String path) {
+        return switch (path) {
+            case "alpha", "gamma", "tau", "omega", "mu", "phi", "sigma", "zeta", "duplicate" -> true;
+            default -> false;
+        };
     }
 
     private static ProjectileDefinition projectile(NoitaProjectileSpellSpec spec) {

@@ -23,7 +23,7 @@ class SpellCatalogIntegrityTest {
     @Test
     void catalogContainsEveryRegisteredSpellExactlyOnce() throws IOException {
         JsonArray spells = catalog().getAsJsonArray("spells");
-        assertEquals(315, spells.size());
+        assertEquals(328, spells.size());
 
         Set<String> registryIds = new HashSet<>();
         for (JsonElement element : spells) {

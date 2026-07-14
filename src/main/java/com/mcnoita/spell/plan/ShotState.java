@@ -23,10 +23,11 @@ public record ShotState(
     boolean piercing,
     boolean friendlyFire,
     int trailLightStacks,
+    double patternDegrees,
     List<String> effects
 ) {
     public static final ShotState EMPTY = new ShotState(0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
-        0.0, 0.0, 0.0, 0, false, false, 0, List.of());
+        0.0, 0.0, 0.0, 0, false, false, 0, 0.0, List.of());
 
     public ShotState {
         effects = List.copyOf(effects);
@@ -51,7 +52,15 @@ public record ShotState(
             piercing || modifier.piercing(),
             friendlyFire || modifier.friendlyFire(),
             trailLightStacks + modifier.trailLightStacks(),
+            patternDegrees,
             nextEffects
         );
+    }
+
+    public ShotState applyDividePenalty(double damagePenalty, double explosionPenalty, double addedPatternDegrees) {
+        return new ShotState(damage + damagePenalty, explosionRadius + explosionPenalty,
+            spreadDegrees, speedMultiplier, castDelayFrames, rechargeFrames, criticalChancePercent, lifetimeFrames,
+            recoil, knockbackForce, gravity, bounceCount, piercing, friendlyFire, trailLightStacks,
+            addedPatternDegrees, effects);
     }
 }

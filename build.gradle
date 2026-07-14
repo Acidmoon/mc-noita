@@ -178,6 +178,12 @@ tasks.register("verifyG03") {
     dependsOn "checkSpellCatalog", "test", "gameTest", "runGametest", "smokeDedicatedServer", "build"
 }
 
+tasks.register("verifyG04") {
+    group = "verification"
+    description = "Runs G04 invocation, Copy/Divide/Add Trigger, GameTest, dedicated-server, and production checks."
+    dependsOn "checkSpellCatalog", "test", "gameTest", "runGametest", "smokeDedicatedServer", "build"
+}
+
 tasks.named("gameTest") {
     mustRunAfter "test"
 }

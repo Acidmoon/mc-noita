@@ -4,6 +4,7 @@ import com.mcnoita.wand.model.CardRef;
 import com.mcnoita.wand.model.NoitaDuration;
 import com.mcnoita.wand.model.WandState;
 import com.mcnoita.wand.eval.DrawOutcome;
+import com.mcnoita.wand.eval.EvaluationTrace;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -23,7 +24,8 @@ public record ResolvedCast(
     long catalogEpoch,
     String catalogHash,
     BudgetUsage budgetUsage,
-    List<CastDiagnostic> diagnostics
+    List<CastDiagnostic> diagnostics,
+    EvaluationTrace trace
 ) {
     public enum Status {
         ACCEPTED,
@@ -39,6 +41,7 @@ public record ResolvedCast(
         Objects.requireNonNull(rechargeTime, "rechargeTime");
         Objects.requireNonNull(catalogHash, "catalogHash");
         Objects.requireNonNull(budgetUsage, "budgetUsage");
+        Objects.requireNonNull(trace, "trace");
         remainingUses = Collections.unmodifiableMap(new LinkedHashMap<>(remainingUses));
         drawOutcomes = List.copyOf(drawOutcomes);
         diagnostics = List.copyOf(diagnostics);

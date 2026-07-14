@@ -13,7 +13,7 @@
 
 Minecraft 不具备 Noita 的 2D 像素材料模拟和 60 FPS 法术执行环境，因此本方案采用“组合语义忠实、世界效果等价、差异显式记录”的原则。法杖抽牌、法力、时序、触发载荷、复制与递归必须尽量忠实；液体、粉末、像素破坏、导电、冻结、变形等效果通过方块、实体、状态效果和有预算的区域算法适配。
 
-当前仓库已经具备一个实现原型，而不是空项目：`ModItems.java` 声明了 315 个法术物品，其中包含 Wiki 列出的全部 122 个 Projectile、45 个 Static Projectile、143 个 Projectile Modifier，以及 5 个 Multicast/Utility/Other 代表法术；`NoitaWandCaster` 已有 Deck、Hand、Discard、法力、触发载荷、Wand Refresh、Alpha、Gamma 和 Duplicate 的简化逻辑。但这些逻辑集中在少数超大类中，法术多为硬编码近似，且尚无自动化测试，不能把“已注册物品”视为“已完成法术”。本次文档工作未完成客户端玩法验证，因此不把原型表述为已经可玩或稳定。
+当前仓库已经具备一个实现原型，而不是空项目：`ModItems.java` 声明了 328 个法术物品，其中包含 Wiki 列出的全部 122 个 Projectile、45 个 Static Projectile、143 个 Projectile Modifier，以及 18 个 Multicast/Utility/Other 法术；`NoitaWandCaster` 已有纯 Deck/Hand/Discard 求值、冻结 Trigger payload，以及 G04 Greek/Divide/Add Trigger 调用 primitive。注册数量仍不等于行为完成度，覆盖率清单继续区分 approximate 与 verified。
 
 ---
 
@@ -108,7 +108,7 @@ Wiki 给出的递归规则为：普通 Draw 的递归层级为 0；调用非 rec
 3. 当前 Modifier 通过临时 `CastState` 包裹递归 Draw 后恢复，不能保证同一 Shot State 的后续多重释放共享修正。
 4. `NoitaProjectilePayload` 已能递归保存嵌套投射物 payload tree，但节点类型单一，尚不足以表达材料、Utility、静态场、条件和延迟动作等异构计划节点；递归 NBT 解码也没有深度、节点数和字节上限。
 5. Alpha、Gamma、Duplicate 只覆盖复制系统的很小部分，且还没有逐条对齐 Wiki 的目标搜索、Draw 开关、次数与递归规则。
-6. 315 个已注册法术物品不等于 315 个完成行为；许多行为被压缩进一个大型枚举或通用实体近似。
+6. 328 个已注册法术物品不等于 328 个完成行为；许多世界效果仍使用通用实体近似。
 7. 伤害目前偏向单一数值，需要独立的 Projectile、Explosion、Fire、Electricity、Drill、Slice、Ice、Healing、Radioactive/Toxic、Poison、Curse、Holy 等语义层。
 8. 没有 `src/test` 或 GameTest，缺乏能保护复杂组合语义的回归网。
 9. 大范围实体扫描、方块修改、弹丸复制、递归和持久实体存在服务器拒绝服务风险。
@@ -258,7 +258,7 @@ com.mcnoita
 
 目标：知道当前能做什么，并为重构建立安全网。
 
-- 记录当前 315 个注册法术、模型、纹理、语言键和行为覆盖率。
+- 记录当前 328 个注册法术、模型、纹理、语言键和行为覆盖率。
 - 把测试分为三类：characterization 只记录现状和已知错误，不作为长期期望；Wiki golden 定义目标语义；regression 防止已修复问题复发。
 - 为现有 starter wand、Spark Bolt、Bomb、Double Spell、Damage Plus、Trigger、Wand Refresh、Alpha、Gamma 建立带“现状/目标”标签的夹具，不能用快照锁死已知错误。
 - 在 `build.gradle` 接入测试 source set、JUnit、选定的属性测试库、Fabric GameTest run/task 和 CI 命令；从本阶段开始加入 dedicated-server class-loading smoke test。
@@ -483,6 +483,6 @@ com.mcnoita
 3. 修复共享 Shot State 语义，使 `Double Spell + Damage Plus + 2x Spark Bolt` 两枚弹丸都继承增伤。
 4. 把法杖固有 Draw 与 action Draw 分离，锁定 wrap/reload 差异。
 5. 给载荷树、复制、方块操作和实体生成加入硬预算。
-6. 生成 315 个现有法术的覆盖率报告，确定哪些只是视觉/数值占位。
+6. 生成当前 328 个法术的覆盖率报告，确定哪些只是视觉/数值占位。
 7. 建立轻量资源来源表并直接补齐缺失图标，只记录 URL、原始文件名和下载日期，不做版权归属检测。
 8. 为 catalog snapshot、施法事务、NBT 载荷和多层预算先写架构决策记录，再开始大规模迁移。

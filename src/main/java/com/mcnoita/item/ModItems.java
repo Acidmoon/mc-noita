@@ -2134,6 +2134,31 @@ public final class ModItems {
             .build(),
         new Item.Settings().maxCount(16)
     ));
+    public static final NoitaSpellItem TAU = register("tau", specialOther(90));
+    public static final NoitaSpellItem OMEGA = register("omega", specialOther(320));
+    public static final NoitaSpellItem MU = register("mu", specialOther(120));
+    public static final NoitaSpellItem PHI = register("phi", specialOther(120));
+    public static final NoitaSpellItem SIGMA = register("sigma", specialOther(120));
+    public static final NoitaSpellItem ZETA = register("zeta", specialOther(10));
+    public static final NoitaSpellItem DIVIDE_2 = register("divide_2", specialOther(35));
+    public static final NoitaSpellItem DIVIDE_3 = register("divide_3", specialOther(50));
+    public static final NoitaSpellItem DIVIDE_4 = register("divide_4", specialOther(70));
+    public static final NoitaSpellItem DIVIDE_10 = register("divide_10", new NoitaSpellItem(
+        NoitaSpellTemplate.builder().type(NoitaSpellType.OTHER).maxUses(5).manaDrain(200).build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem ADD_TRIGGER = register("add_trigger", new NoitaSpellItem(
+        NoitaSpellTemplate.builder().type(NoitaSpellType.OTHER).maxUses(10).manaDrain(10).build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem ADD_TIMER = register("add_timer", new NoitaSpellItem(
+        NoitaSpellTemplate.builder().type(NoitaSpellType.OTHER).maxUses(20).manaDrain(20).build(),
+        new Item.Settings().maxCount(16)
+    ));
+    public static final NoitaSpellItem ADD_DEATH_TRIGGER = register("add_death_trigger", new NoitaSpellItem(
+        NoitaSpellTemplate.builder().type(NoitaSpellType.OTHER).maxUses(20).manaDrain(20).build(),
+        new Item.Settings().maxCount(16)
+    ));
     public static final NoitaSpellItem SPREAD_REDUCE = registerModifier("spread_reduce", NoitaSpellTemplate.builder()
         .type(NoitaSpellType.PROJECTILE_MODIFIER)
         .maxUses(150)
@@ -3320,6 +3345,13 @@ public final class ModItems {
         NoitaSpellItem item = register(path, new NoitaSpellItem(template, new Item.Settings().maxCount(16)));
         MODIFIER_SPELLS_MUTABLE.add(item);
         return item;
+    }
+
+    private static NoitaSpellItem specialOther(int mana) {
+        return new NoitaSpellItem(NoitaSpellTemplate.builder()
+            .type(NoitaSpellType.OTHER)
+            .manaDrain(mana)
+            .build(), new Item.Settings().maxCount(16));
     }
 
     private static <T extends Item> T register(String path, T item) {

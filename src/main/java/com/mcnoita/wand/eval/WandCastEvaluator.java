@@ -27,11 +27,24 @@ public final class WandCastEvaluator {
         NoitaDuration elapsed,
         long randomSeed
     ) {
+        return evaluate(wand, state, catalog, elapsed, randomSeed, ExternalSpellPool.EMPTY);
+    }
+
+    public ResolvedCast evaluate(
+        WandDefinition wand,
+        WandState state,
+        SpellCatalog catalog,
+        NoitaDuration elapsed,
+        long randomSeed,
+        ExternalSpellPool externalSpellPool
+    ) {
         Objects.requireNonNull(wand, "wand");
         Objects.requireNonNull(state, "state");
         Objects.requireNonNull(catalog, "catalog");
         Objects.requireNonNull(elapsed, "elapsed");
+        Objects.requireNonNull(externalSpellPool, "externalSpellPool");
 
-        return new WandCastSession(wand, state, catalog, elapsed, new CastRng(randomSeed), budget).evaluate();
+        return new WandCastSession(wand, state, catalog, elapsed, new CastRng(randomSeed), budget,
+            externalSpellPool).evaluate();
     }
 }

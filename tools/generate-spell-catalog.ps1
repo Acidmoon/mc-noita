@@ -19,7 +19,7 @@ $ExpectedCategoryCounts = [ordered]@{
     projectile = 122
     static_projectile = 45
     projectile_modifier = 143
-    other = 3
+    other = 16
     multicast = 1
     utility = 1
 }
@@ -37,6 +37,19 @@ $CatalogTestReferences = @{
     "mc-noita:wand_refresh" = @{ characterization = @("CHAR-006"); wiki_golden = @("WIKI-005"); game_test = @("GT-007"); manual = @() }
     "mc-noita:alpha" = @{ characterization = @("CHAR-007"); wiki_golden = @("WIKI-006"); game_test = @("GT-008"); manual = @() }
     "mc-noita:gamma" = @{ characterization = @("CHAR-008"); wiki_golden = @("WIKI-007"); game_test = @("GT-009"); manual = @() }
+    "mc-noita:tau" = @{ characterization = @("G04-GREEK"); wiki_golden = @("G04-GREEK"); game_test = @(); manual = @() }
+    "mc-noita:omega" = @{ characterization = @("G04-GREEK"); wiki_golden = @("G04-GREEK"); game_test = @(); manual = @() }
+    "mc-noita:mu" = @{ characterization = @("G04-GREEK"); wiki_golden = @("G04-GREEK"); game_test = @(); manual = @() }
+    "mc-noita:phi" = @{ characterization = @("G04-GREEK"); wiki_golden = @("G04-GREEK"); game_test = @(); manual = @() }
+    "mc-noita:sigma" = @{ characterization = @("G04-GREEK"); wiki_golden = @("G04-GREEK"); game_test = @(); manual = @() }
+    "mc-noita:zeta" = @{ characterization = @("G04-ZETA"); wiki_golden = @("G04-ZETA"); game_test = @(); manual = @() }
+    "mc-noita:divide_2" = @{ characterization = @("G04-DIVIDE"); wiki_golden = @("G04-DIVIDE"); game_test = @(); manual = @() }
+    "mc-noita:divide_3" = @{ characterization = @("G04-DIVIDE"); wiki_golden = @("G04-DIVIDE"); game_test = @(); manual = @() }
+    "mc-noita:divide_4" = @{ characterization = @("G04-DIVIDE"); wiki_golden = @("G04-DIVIDE"); game_test = @(); manual = @() }
+    "mc-noita:divide_10" = @{ characterization = @("G04-DIVIDE"); wiki_golden = @("G04-DIVIDE"); game_test = @(); manual = @() }
+    "mc-noita:add_trigger" = @{ characterization = @("G04-ADD-TRIGGER"); wiki_golden = @("G04-ADD-TRIGGER"); game_test = @("G04-GT-ADD-TRIGGER"); manual = @() }
+    "mc-noita:add_timer" = @{ characterization = @("G04-ADD-TRIGGER"); wiki_golden = @("G04-ADD-TRIGGER"); game_test = @(); manual = @() }
+    "mc-noita:add_death_trigger" = @{ characterization = @("G04-ADD-TRIGGER"); wiki_golden = @("G04-ADD-TRIGGER"); game_test = @(); manual = @() }
 }
 
 function Read-JsonObject {
@@ -229,9 +242,12 @@ function New-SpellCatalog {
         })
     }
 
-    $sortedSpells = @($spells | Sort-Object registry_id)
-    if ($sortedSpells.Count -ne 315) {
-        throw "Expected 315 registered spells, found $($sortedSpells.Count) while parsing ModItems.java"
+    # Hashtable keys are not PowerShell object properties. Use an explicit
+    # expression so catalog order is stable across processes and PS versions.
+    $sortedSpells = @($spells | Sort-Object { $_["registry_id"] })
+    $expectedSpellCount = ($ExpectedCategoryCounts.Values | Measure-Object -Sum).Sum
+    if ($sortedSpells.Count -ne $expectedSpellCount) {
+        throw "Expected $expectedSpellCount registered spells, found $($sortedSpells.Count) while parsing ModItems.java"
     }
     return [ordered]@{
         schema_version = 1
@@ -285,8 +301,9 @@ function Test-SpellCatalog {
     Write-Verbose "Reading catalog"
     $catalog = Read-JsonObject $CatalogPath
     $spells = @($catalog.spells)
-    if ($spells.Count -ne 315) {
-        throw "Spell catalog must contain 315 entries, found $($spells.Count)"
+    $expectedSpellCount = ($ExpectedCategoryCounts.Values | Measure-Object -Sum).Sum
+    if ($spells.Count -ne $expectedSpellCount) {
+        throw "Spell catalog must contain $expectedSpellCount entries, found $($spells.Count)"
     }
     if (@($spells.registry_id | Select-Object -Unique).Count -ne $spells.Count) {
         throw "Spell catalog contains duplicate registry IDs"
