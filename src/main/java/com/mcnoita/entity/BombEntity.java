@@ -17,9 +17,14 @@ import com.mcnoita.spell.trigger.TriggerRuntimeStateNbtCodec;
 import com.mcnoita.persistence.NoitaNbtLimits;
 import com.mcnoita.persistence.NoitaNbtSafety;
 import com.mcnoita.persistence.NoitaNbtSchema;
+import com.mcnoita.world.mutation.WorldMutationContext;
+import com.mcnoita.world.mutation.WorldMutationService;
+import com.mcnoita.world.mutation.WorldQueryService;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.function.Predicate;
 import net.minecraft.block.AbstractFireBlock;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.BlockState;
@@ -201,13 +206,7 @@ public class BombEntity extends LivingEntity {
         if (!world.isClient) {
             releaseTriggerPayload(TriggerEvent.terminated(terminationCause));
             if (this.explosionRadius > 0.0f) {
-                world.createExplosion(
-                    this,
-                    this.getX(), this.getY(), this.getZ(),
-                    this.explosionRadius,
-                    true,
-                    World.ExplosionSourceType.TNT
-                );
+                mutateExplosion(this.getPos(), this.explosionRadius, true);
             }
             applyNoitaExplosionAftermath(world);
         }
@@ -472,7 +471,7 @@ public class BombEntity extends LivingEntity {
         Entity closest = null;
         Vec3d closestHit = null;
         double closestDistance = Double.MAX_VALUE;
-        for (Entity candidate : this.getWorld().getOtherEntities(this, sweptBox, this::isValidCollisionEntity)) {
+        for (Entity candidate : queryEntities(sweptBox, this::isValidCollisionEntity)) {
             Vec3d hit = candidate.getBoundingBox().expand(0.3).raycast(start, end).orElse(null);
             if (hit == null) {
                 continue;
@@ -549,6 +548,27 @@ public class BombEntity extends LivingEntity {
             this.triggerPlan.payloads().stream().flatMap(payload -> payload.projectiles().stream()).toList());
     }
 
+    /** Destructive bomb aftermath is denied when its persisted owner is offline. */
+    private Optional<WorldMutationContext> mutationContext() {
+        return WorldMutationContext.forEntity(this, getCaster(), this.casterUuid, currentFrozenPayload().executionIdentity());
+    }
+
+    private boolean mutateExplosion(Vec3d center, float radius, boolean fire) {
+        return mutationContext().map(context -> WorldMutationService.explode(context, this, center, radius, fire)).orElse(false);
+    }
+
+    private boolean mutateBreak(BlockPos pos, boolean drop) {
+        return mutationContext().map(context -> WorldMutationService.breakBlock(context, pos, drop, this)).orElse(false);
+    }
+
+    private boolean mutateReplace(BlockPos pos, BlockState state, int flags) {
+        return mutationContext().map(context -> WorldMutationService.replaceBlock(context, pos, state, flags)).orElse(false);
+    }
+
+    private List<Entity> queryEntities(Box area, Predicate<? super Entity> predicate) {
+        return mutationContext().map(context -> WorldQueryService.entities(context, this, area, predicate, 128)).orElse(List.of());
+    }
+
     private Vec3d getPayloadDirection() {
         Vec3d velocity = this.getVelocity();
         if (velocity.lengthSquared() > 1.0E-6) {
@@ -585,7 +605,7 @@ public class BombEntity extends LivingEntity {
 
     private void igniteAround(World world, int radius, int seconds) {
         Box area = this.getBoundingBox().expand(radius);
-        for (net.minecraft.entity.Entity entity : world.getOtherEntities(this, area, entity -> entity instanceof LivingEntity)) {
+        for (Entity entity : queryEntities(area, entity -> entity instanceof LivingEntity)) {
             entity.setOnFireFor(seconds);
         }
         BlockPos center = this.getBlockPos();
@@ -595,21 +615,21 @@ public class BombEntity extends LivingEntity {
             }
             BlockState fire = AbstractFireBlock.getState(world, pos);
             if (fire.canPlaceAt(world, pos)) {
-                world.setBlockState(pos, fire, 11);
+                mutateReplace(pos, fire, 11);
             }
         }
     }
 
     private void freezeNearby(int radius) {
         Box area = this.getBoundingBox().expand(radius);
-        for (net.minecraft.entity.Entity entity : this.getWorld().getOtherEntities(this, area, entity -> entity instanceof LivingEntity)) {
+        for (Entity entity : queryEntities(area, entity -> entity instanceof LivingEntity)) {
             entity.setFrozenTicks(Math.max(entity.getFrozenTicks(), 180));
         }
     }
 
     private void holyFlash(double radius) {
         Box area = this.getBoundingBox().expand(radius);
-        for (net.minecraft.entity.Entity entity : this.getWorld().getOtherEntities(this, area, entity -> entity instanceof LivingEntity)) {
+        for (Entity entity : queryEntities(area, entity -> entity instanceof LivingEntity)) {
             if (entity instanceof LivingEntity living) {
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.BLINDNESS, 80, 0), this);
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.WEAKNESS, 120, 1), this);
@@ -619,7 +639,7 @@ public class BombEntity extends LivingEntity {
 
     private void poisonNearby(double radius) {
         Box area = this.getBoundingBox().expand(radius);
-        for (net.minecraft.entity.Entity entity : this.getWorld().getOtherEntities(this, area, entity -> entity instanceof LivingEntity)) {
+        for (Entity entity : queryEntities(area, entity -> entity instanceof LivingEntity)) {
             if (entity instanceof LivingEntity living) {
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.POISON, 160, 1), this);
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.NAUSEA, 120, 0), this);
@@ -637,7 +657,7 @@ public class BombEntity extends LivingEntity {
             BlockState state = world.getBlockState(pos);
             float hardness = state.getHardness(world, pos);
             if (!state.isAir() && hardness >= 0.0f && hardness <= 20.0f && this.random.nextInt(3) != 0) {
-                world.breakBlock(pos, false, this, 16);
+                mutateBreak(pos, false);
             }
         }
     }
@@ -649,7 +669,7 @@ public class BombEntity extends LivingEntity {
                 continue;
             }
             if (world.getBlockState(pos.down()).isSideSolidFullSquare(world, pos.down(), Direction.UP)) {
-                world.setBlockState(pos, Blocks.GLOWSTONE.getDefaultState(), 11);
+                mutateReplace(pos, Blocks.GLOWSTONE.getDefaultState(), 11);
             }
         }
     }
@@ -661,7 +681,7 @@ public class BombEntity extends LivingEntity {
                 continue;
             }
             if (world.getBlockState(pos.down()).isSideSolidFullSquare(world, pos.down(), Direction.UP)) {
-                world.setBlockState(pos, Blocks.TNT.getDefaultState(), 11);
+                mutateReplace(pos, Blocks.TNT.getDefaultState(), 11);
             }
         }
     }
@@ -715,7 +735,7 @@ public class BombEntity extends LivingEntity {
             return;
         }
         Box area = this.getBoundingBox().expand(1.8);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area,
+        for (Entity entity : queryEntities(area,
             candidate -> candidate instanceof LivingEntity && isValidCollisionEntity(candidate))) {
             if (entity instanceof LivingEntity) {
                 submitCollision(entityCollisionKey(entity));

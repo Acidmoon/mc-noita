@@ -23,8 +23,14 @@ import com.mcnoita.spell.trigger.TriggerRuntimeDiagnostics;
 import com.mcnoita.spell.trigger.TriggerRuntimeState;
 import com.mcnoita.spell.trigger.TriggerRuntimeStateNbtCodec;
 import com.mcnoita.world.NoitaTemporaryLightManager;
+import com.mcnoita.world.mutation.WorldMutationContext;
+import com.mcnoita.world.mutation.WorldMutationKind;
+import com.mcnoita.world.mutation.WorldMutationService;
+import com.mcnoita.world.mutation.WorldQueryService;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
+import java.util.function.Predicate;
 import java.util.UUID;
 import net.minecraft.block.AbstractFireBlock;
 import net.minecraft.block.Blocks;
@@ -328,7 +334,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             pullOwnerToHook();
         }
         if (this.behavior.explodesOnCollision() && this.explosionRadius > 0.0f) {
-            this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), this.explosionRadius, true, World.ExplosionSourceType.TNT);
+            mutateExplosion(this.getPos(), this.explosionRadius, true);
         }
         this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
         if (!this.piercing) {
@@ -480,12 +486,14 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
                 BombEntity bomb = new BombEntity(world, owner, childPayload);
                 bomb.setPosition(position);
                 bomb.setVelocity(shotDirection.multiply(payload.speed()));
-                world.spawnEntity(bomb);
+                WorldMutationContext.forPayload(world, owner, childPayload.executionIdentity())
+                    .ifPresent(context -> WorldMutationService.spawnEntity(context, bomb));
             } else {
                 SparkBoltProjectileEntity projectile = new SparkBoltProjectileEntity(world, owner, childPayload);
                 projectile.setPosition(position);
                 projectile.setVelocity(shotDirection.x, shotDirection.y, shotDirection.z, payload.speed(), payload.divergence());
-                world.spawnEntity(projectile);
+                WorldMutationContext.forPayload(world, owner, childPayload.executionIdentity())
+                    .ifPresent(context -> WorldMutationService.spawnEntity(context, projectile));
             }
         }
     }
@@ -638,6 +646,49 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             this.modifierEffects, this.triggerPlan.payloads().stream().flatMap(payload -> payload.projectiles().stream()).toList());
     }
 
+    /**
+     * World effects always rebind ownership at execution time. A missing owner
+     * is deliberately denied by WorldMutationPolicy instead of becoming an
+     * unowned terrain-changing projectile after logout or a reload.
+     */
+    private Optional<WorldMutationContext> mutationContext() {
+        Entity owner = this.getOwner();
+        return WorldMutationContext.forEntity(this, owner, owner == null ? null : owner.getUuid(),
+            currentFrozenPayload().executionIdentity());
+    }
+
+    private boolean mutateExplosion(Vec3d center, float radius, boolean fire) {
+        return mutationContext().map(context -> WorldMutationService.explode(context, this, center, radius, fire)).orElse(false);
+    }
+
+    private boolean mutateBreak(BlockPos pos, boolean drop) {
+        return mutationContext().map(context -> WorldMutationService.breakBlock(context, pos, drop, this)).orElse(false);
+    }
+
+    private boolean mutateReplace(BlockPos pos, BlockState state, int flags) {
+        return mutationContext().map(context -> WorldMutationService.replaceBlock(context, pos, state, flags)).orElse(false);
+    }
+
+    private boolean mutateSpawn(Entity entity) {
+        return mutationContext().map(context -> WorldMutationService.spawnEntity(context, entity)).orElse(false);
+    }
+
+    private FallingBlockEntity mutateSpawnFallingBlock(BlockPos pos, BlockState state) {
+        return mutationContext().map(context -> WorldMutationService.spawnFallingBlock(context, pos, state)).orElse(null);
+    }
+
+    private List<Entity> queryEntities(Box area) {
+        return queryEntities(area, entity -> true);
+    }
+
+    private List<Entity> queryEntities(Box area, Predicate<? super Entity> predicate) {
+        return mutationContext().map(context -> WorldQueryService.entities(context, this, area, predicate, 128)).orElse(List.of());
+    }
+
+    private Optional<BlockState> queryBlockState(BlockPos pos) {
+        return mutationContext().flatMap(context -> WorldQueryService.blockState(context, pos, WorldMutationKind.BLOCK_CHECK));
+    }
+
     private boolean isValidTriggerCollision(HitResult hitResult) {
         if (hitResult instanceof EntityHitResult entityHit) {
             if (ignoresEntityCollision()) {
@@ -730,7 +781,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     private void pushNearbyEntities(double force, double radius) {
         World world = this.getWorld();
         Box box = this.getBoundingBox().expand(radius);
-        for (Entity entity : world.getOtherEntities(this, box)) {
+        for (Entity entity : queryEntities(box)) {
             Vec3d offset = this.getPos().subtract(entity.getPos());
             double distanceSquared = Math.max(1.0, offset.lengthSquared());
             Vec3d impulse = offset.normalize().multiply(force / distanceSquared * 8.0);
@@ -743,7 +794,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         World world = this.getWorld();
         BlockState state = world.getBlockState(hitResult.getBlockPos());
         if (!state.isAir() && state.getHardness(world, hitResult.getBlockPos()) >= 0.0f) {
-            world.breakBlock(hitResult.getBlockPos(), shouldDropDugBlocks(), this, 16);
+            mutateBreak(hitResult.getBlockPos(), shouldDropDugBlocks());
         }
     }
 
@@ -978,7 +1029,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             case "poison_blast", "alcohol_blast" -> 2.0f;
             default -> 1.8f;
         };
-        this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), radius, path.equals("fireblast") || path.equals("alcohol_blast"), World.ExplosionSourceType.TNT);
+        mutateExplosion(this.getPos(), radius, path.equals("fireblast") || path.equals("alcohol_blast"));
         if (path.equals("fireblast") || path.equals("alcohol_blast")) {
             igniteAround(radius + 0.6, path.equals("fireblast") ? 5 : 3, true);
         } else if (path.equals("poison_blast")) {
@@ -999,7 +1050,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             ? this.getBoundingBox().expand(radius)
             : new Box(this.getX() - (vertical ? 0.55 : radius), this.getY() - (vertical ? radius : 0.55), this.getZ() - radius,
                 this.getX() + (vertical ? 0.55 : radius), this.getY() + (vertical ? radius : 0.55), this.getZ() + radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity == this.getOwner() || entity instanceof LivingEntity) {
                 continue;
             }
@@ -1020,7 +1071,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             return;
         }
         Box area = this.getBoundingBox().expand(4.0);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (!(entity instanceof LivingEntity living)) {
                 continue;
             }
@@ -1063,7 +1114,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         }
         double radius = 4.5;
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity || entity == this.getOwner()) {
                 continue;
             }
@@ -1129,7 +1180,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void applyDestructionField() {
         if (this.age <= 2) {
-            this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), 6.0f, true, World.ExplosionSourceType.TNT);
+            mutateExplosion(this.getPos(), 6.0f, true);
         }
         if (this.age % 2 == 0) {
             eatCellsAround(4);
@@ -1142,7 +1193,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             return;
         }
         Box area = this.getBoundingBox().expand(8.0);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity living) {
                 applyRandomFunkyStatus(living);
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.WEAKNESS, 180, 2), this);
@@ -1191,7 +1242,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         Vec3d position = this.getPos().add(randomHorizontalDirection().multiply(this.random.nextDouble() * 5.0)).add(0.0, 8.0, 0.0);
         spawned.refreshPositionAndAngles(position.x, position.y, position.z, this.getYaw(), this.getPitch());
         spawned.setVelocity(randomHorizontalDirection().multiply(0.15).add(0.0, -0.2, 0.0));
-        world.spawnEntity(spawned);
+        mutateSpawn(spawned);
     }
 
     private void applyEntitySpellEffect(Entity target) {
@@ -1358,7 +1409,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         }
         if (hasModifierEffect(NoitaModifierEffect.RANDOM_EXPLOSION) && this.age % 20 == 0 && this.random.nextInt(3) == 0) {
             float radius = 1.0f + this.random.nextFloat() * 2.5f;
-            this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), radius, false, World.ExplosionSourceType.TNT);
+            mutateExplosion(this.getPos(), radius, false);
         }
         if (hasModifierEffect(NoitaModifierEffect.LASER_EMITTER_WIDER) && this.age % 8 == 0) {
             spawnSideBeams("laser_emitter", 2, 0.9f, Math.max(2.0f, this.damage * 0.45f), 18, 0.0f);
@@ -1459,16 +1510,16 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             livingTarget.addStatusEffect(new StatusEffectInstance(StatusEffects.WEAKNESS, 180, 1), this);
         }
         if (hasModifierEffect(NoitaModifierEffect.HITFX_EXPLOSION_SLIME) && livingTarget.hasStatusEffect(StatusEffects.SLOWNESS)) {
-            this.getWorld().createExplosion(this, livingTarget.getX(), livingTarget.getY(), livingTarget.getZ(), 2.0f, false, World.ExplosionSourceType.TNT);
+            mutateExplosion(livingTarget.getPos(), 2.0f, false);
         }
         if (hasModifierEffect(NoitaModifierEffect.HITFX_EXPLOSION_SLIME_GIGA) && livingTarget.hasStatusEffect(StatusEffects.SLOWNESS)) {
-            this.getWorld().createExplosion(this, livingTarget.getX(), livingTarget.getY(), livingTarget.getZ(), 5.0f, false, World.ExplosionSourceType.TNT);
+            mutateExplosion(livingTarget.getPos(), 5.0f, false);
         }
         if (hasModifierEffect(NoitaModifierEffect.HITFX_EXPLOSION_ALCOHOL) && livingTarget.hasStatusEffect(StatusEffects.NAUSEA)) {
-            this.getWorld().createExplosion(this, livingTarget.getX(), livingTarget.getY(), livingTarget.getZ(), 2.0f, true, World.ExplosionSourceType.TNT);
+            mutateExplosion(livingTarget.getPos(), 2.0f, true);
         }
         if (hasModifierEffect(NoitaModifierEffect.HITFX_EXPLOSION_ALCOHOL_GIGA) && livingTarget.hasStatusEffect(StatusEffects.NAUSEA)) {
-            this.getWorld().createExplosion(this, livingTarget.getX(), livingTarget.getY(), livingTarget.getZ(), 5.0f, true, World.ExplosionSourceType.TNT);
+            mutateExplosion(livingTarget.getPos(), 5.0f, true);
         }
         if (hasModifierEffect(NoitaModifierEffect.HITFX_PETRIFY)) {
             livingTarget.addStatusEffect(new StatusEffectInstance(StatusEffects.SLOWNESS, 220, 5), this);
@@ -1521,7 +1572,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             coolLavaAround(blockPos, 2);
         }
         if (hasModifierEffect(NoitaModifierEffect.LIQUID_TO_EXPLOSION) && isNearLiquid(blockPos, 2)) {
-            this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), 3.0f, false, World.ExplosionSourceType.TNT);
+            mutateExplosion(this.getPos(), 3.0f, false);
         }
         if (hasModifierEffect(NoitaModifierEffect.STATIC_TO_SAND)) {
             sandifyTerrain(blockPos, 2);
@@ -1586,10 +1637,10 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void applyBounceModifierEffects() {
         if (hasModifierEffect(NoitaModifierEffect.BOUNCE_EXPLOSION)) {
-            this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), 2.6f, false, World.ExplosionSourceType.TNT);
+            mutateExplosion(this.getPos(), 2.6f, false);
         }
         if (hasModifierEffect(NoitaModifierEffect.BOUNCE_SMALL_EXPLOSION)) {
-            this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), 1.4f, false, World.ExplosionSourceType.TNT);
+            mutateExplosion(this.getPos(), 1.4f, false);
         }
         if (hasModifierEffect(NoitaModifierEffect.BOUNCE_SPARK)) {
             spawnRadialProjectiles("bubbleshot", NoitaProjectileBehavior.BOLT, 3, Math.max(1.0f, this.damage * 0.35f), 25, 0.65f, 0.0f, 0.0f);
@@ -1810,9 +1861,9 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         } else if (path.equals("hook")) {
             pullOwnerToHook();
         } else if (isDeathCross()) {
-            this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), normalizedItemPath().endsWith("_big") ? 4.0f : 2.6f, true, World.ExplosionSourceType.TNT);
+            mutateExplosion(this.getPos(), normalizedItemPath().endsWith("_big") ? 4.0f : 2.6f, true);
         } else if (path.equals("firework")) {
-            this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), 2.0f, false, World.ExplosionSourceType.TNT);
+            mutateExplosion(this.getPos(), 2.0f, false);
         } else if (path.equals("infestation")) {
             for (int i = 0; i < 6; i++) {
                 spawnInfestationShard();
@@ -1839,7 +1890,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         }
         String path = normalizedItemPath();
         Box area = this.getBoundingBox().expand(3.0);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (!(entity instanceof LivingEntity livingTarget)) {
                 continue;
             }
@@ -1873,7 +1924,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         }
         double radius = normalizedItemPath().startsWith("big_") ? 4.0 : 2.4;
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity == owner || entity instanceof LivingEntity) {
                 continue;
             }
@@ -1938,11 +1989,11 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
                 BlockPos blockPos = BlockPos.ofFloored(point);
                 BlockState state = world.getBlockState(blockPos);
                 if (!state.isAir() && state.getHardness(world, blockPos) >= 0.0f && state.getHardness(world, blockPos) <= 14.0f) {
-                    world.breakBlock(blockPos, false, this, 16);
+                    mutateBreak(blockPos, false);
                 }
             }
             Box area = Box.of(point, 0.9, 0.9, 0.9);
-            for (Entity entity : world.getOtherEntities(this, area)) {
+            for (Entity entity : queryEntities(area)) {
                 if (entity instanceof LivingEntity) {
                     NoitaSpellDamage.apply(entity, this.getDamageSources().indirectMagic(this, this.getOwner() == null ? this : this.getOwner()), beamDamage);
                 }
@@ -1978,7 +2029,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         );
         Vec3d flamePos = this.getPos().add(offset);
         Box area = Box.of(flamePos, 1.6, 1.6, 1.6);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             entity.setOnFireFor(5);
             if (entity instanceof LivingEntity) {
                 NoitaSpellDamage.apply(entity, this.getDamageSources().indirectMagic(this, this.getOwner() == null ? this : this.getOwner()), 1.0f);
@@ -1988,7 +2039,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (this.random.nextInt(3) == 0 && this.getWorld().getBlockState(blockPos).isAir()) {
             BlockState fire = AbstractFireBlock.getState(this.getWorld(), blockPos);
             if (fire.canPlaceAt(this.getWorld(), blockPos)) {
-                this.getWorld().setBlockState(blockPos, fire, 11);
+                mutateReplace(blockPos, fire, 11);
             }
         }
     }
@@ -2011,7 +2062,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             return;
         }
         Box area = this.getBoundingBox().expand(2.0);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity living) {
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.WITHER, 80, 0), this);
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.SLOWNESS, 60, 0), this);
@@ -2136,7 +2187,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             damageLivingInRadius(radius, this.damage + (path.equals("tentacle_portal") ? 3.0f : 1.0f), false);
         }
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity == this.getOwner()) {
                 continue;
             }
@@ -2154,7 +2205,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void applyPollenCloud() {
         Box area = this.getBoundingBox().expand(2.0);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity living) {
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.SLOWNESS, 60, 0), this);
                 NoitaSpellDamage.apply(entity, this.getDamageSources().indirectMagic(this, this.getOwner() == null ? this : this.getOwner()), 1.0f);
@@ -2183,7 +2234,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         Entity owner = this.getOwner();
         Box area = this.getBoundingBox().expand(5.0);
         int chained = 0;
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity == owner || !(entity instanceof LivingEntity)) {
                 continue;
             }
@@ -2237,7 +2288,8 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (path.equals("fish")) {
             spawned = EntityType.COD.create(world);
         } else if (path.equals("pebble") || path.equals("summon_rock")) {
-            spawned = FallingBlockEntity.spawnFromBlock(world, this.getBlockPos(), path.equals("pebble") ? Blocks.MOSSY_COBBLESTONE.getDefaultState() : Blocks.COBBLESTONE.getDefaultState());
+            spawned = mutateSpawnFallingBlock(this.getBlockPos(),
+                path.equals("pebble") ? Blocks.MOSSY_COBBLESTONE.getDefaultState() : Blocks.COBBLESTONE.getDefaultState());
             if (spawned instanceof FallingBlockEntity fallingBlock) {
                 fallingBlock.setVelocity(this.getVelocity());
                 fallingBlock.setHurtEntities(path.equals("pebble") ? 14.0f : 10.0f, path.equals("pebble") ? 80 : 40);
@@ -2256,7 +2308,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (spawned != null && !(spawned instanceof FallingBlockEntity)) {
             spawned.refreshPositionAndAngles(pos.x, pos.y, pos.z, this.getYaw(), this.getPitch());
             spawned.setVelocity(this.getVelocity());
-            world.spawnEntity(spawned);
+            mutateSpawn(spawned);
         }
     }
 
@@ -2277,7 +2329,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         }
         spawned.refreshPositionAndAngles(this.getX(), this.getY(), this.getZ(), this.getYaw(), this.getPitch());
         spawned.setVelocity(this.getVelocity().multiply(0.35));
-        serverWorld.spawnEntity(spawned);
+        mutateSpawn(spawned);
     }
 
     private void burstHollowEgg() {
@@ -2391,7 +2443,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             if (!canEatBlock(world, pos, state)) {
                 continue;
             }
-            world.breakBlock(pos, false, this, 16);
+            mutateBreak(pos, false);
         }
     }
 
@@ -2406,7 +2458,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     private void damageLivingInRadius(double radius, float damageAmount, boolean includeOwner) {
         Entity owner = this.getOwner();
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (!includeOwner && entity == owner) {
                 continue;
             }
@@ -2418,7 +2470,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void poisonLivingInRadius(double radius, int durationTicks) {
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity living) {
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.POISON, durationTicks, 0), this);
             }
@@ -2427,7 +2479,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void slowLivingInRadius(double radius, int durationTicks, int amplifier) {
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity living) {
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.SLOWNESS, durationTicks, amplifier), this);
             }
@@ -2436,7 +2488,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void healLivingInRadius(double radius, float amount) {
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity living) {
                 living.heal(amount);
             }
@@ -2445,7 +2497,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void extinguishLivingInRadius(double radius) {
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity living) {
                 living.extinguish();
             }
@@ -2454,7 +2506,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void pushNearbyNonLivingProjectiles(double radius, double strength) {
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity instanceof LivingEntity || entity == this.getOwner()) {
                 continue;
             }
@@ -2469,7 +2521,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void pullNearbyEntitiesTo(Vec3d position, double radius, double strength, Entity excluded) {
         Box area = new Box(position, position).expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity == excluded || entity == this.getOwner()) {
                 continue;
             }
@@ -2492,7 +2544,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         }
         spawned.refreshPositionAndAngles(source.getX(), source.getY(), source.getZ(), source.getYaw(), source.getPitch());
         spawned.setVelocity(randomHorizontalDirection().multiply(0.2));
-        serverWorld.spawnEntity(spawned);
+        mutateSpawn(spawned);
     }
 
     private void pullEntityTowardOwner(Entity target, double strength) {
@@ -2549,7 +2601,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         LivingEntity nearest = null;
         double nearestDistance = Double.MAX_VALUE;
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             if (entity == owner || !(entity instanceof LivingEntity living)) {
                 continue;
             }
@@ -2601,7 +2653,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     private void igniteAround(double radius, int seconds, boolean placeFire) {
         World world = this.getWorld();
         Box area = this.getBoundingBox().expand(radius);
-        for (Entity entity : world.getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             entity.setOnFireFor(seconds);
         }
         if (!placeFire) {
@@ -2615,7 +2667,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             }
             BlockState fire = AbstractFireBlock.getState(world, pos);
             if (fire.canPlaceAt(world, pos)) {
-                world.setBlockState(pos, fire, 11);
+                mutateReplace(pos, fire, 11);
             }
         }
     }
@@ -2625,9 +2677,9 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         for (BlockPos pos : BlockPos.iterate(center.add(-radius, -radius, -radius), center.add(radius, radius, radius))) {
             BlockState state = world.getBlockState(pos);
             if (state.isOf(Blocks.WATER)) {
-                world.setBlockState(pos, Blocks.ICE.getDefaultState(), 11);
+                mutateReplace(pos, Blocks.ICE.getDefaultState(), 11);
             } else if (state.isAir() && world.getBlockState(pos.down()).isSideSolidFullSquare(world, pos.down(), Direction.UP) && this.random.nextInt(4) == 0) {
-                world.setBlockState(pos, Blocks.SNOW.getDefaultState(), 11);
+                mutateReplace(pos, Blocks.SNOW.getDefaultState(), 11);
             }
         }
     }
@@ -2641,7 +2693,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             }
             float hardness = state.getHardness(world, pos);
             if (hardness >= 0.0f && hardness <= 4.0f) {
-                world.breakBlock(pos, false, this, 16);
+                mutateBreak(pos, false);
             }
         }
     }
@@ -2651,7 +2703,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         for (BlockPos pos : BlockPos.iterate(center.add(-radius, -radius, -radius), center.add(radius, radius, radius))) {
             BlockState state = world.getBlockState(pos);
             if (state.isOf(Blocks.WATER)) {
-                world.setBlockState(pos, Blocks.LIME_CONCRETE_POWDER.getDefaultState(), 11);
+                mutateReplace(pos, Blocks.LIME_CONCRETE_POWDER.getDefaultState(), 11);
             }
         }
         poisonLivingInRadius(radius + 1.0, 100);
@@ -2667,12 +2719,12 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             }
             if (liquidOnly) {
                 if (state.isOf(Blocks.WATER) || state.isOf(Blocks.LAVA)) {
-                    world.setBlockState(pos, Blocks.AIR.getDefaultState(), 11);
+                    mutateReplace(pos, Blocks.AIR.getDefaultState(), 11);
                 }
             } else {
                 float hardness = state.getHardness(world, pos);
                 if (hardness >= 0.0f && hardness <= 2.5f && this.random.nextInt(3) == 0) {
-                    world.breakBlock(pos, false, this, 16);
+                    mutateBreak(pos, false);
                 }
             }
         }
@@ -2683,7 +2735,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         for (BlockPos pos : BlockPos.iterate(center.add(-radius, -radius, -radius), center.add(radius, radius, radius))) {
             BlockState state = world.getBlockState(pos);
             if (state.isOf(Blocks.LAVA)) {
-                world.setBlockState(pos, Blocks.REDSTONE_BLOCK.getDefaultState(), 11);
+                mutateReplace(pos, Blocks.REDSTONE_BLOCK.getDefaultState(), 11);
             }
         }
     }
@@ -2705,7 +2757,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             BlockState state = world.getBlockState(pos);
             float hardness = state.getHardness(world, pos);
             if (!state.isAir() && hardness >= 0.0f && hardness <= 8.0f && this.random.nextInt(3) == 0) {
-                world.setBlockState(pos, Blocks.SAND.getDefaultState(), 11);
+                mutateReplace(pos, Blocks.SAND.getDefaultState(), 11);
             }
         }
     }
@@ -2724,7 +2776,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             BlockState state = world.getBlockState(pos);
             float hardness = state.getHardness(world, pos);
             if (!state.isAir() && hardness >= 0.0f && hardness <= 8.0f && this.random.nextInt(4) == 0) {
-                world.setBlockState(pos, palette[this.random.nextInt(palette.length)], 11);
+                mutateReplace(pos, palette[this.random.nextInt(palette.length)], 11);
             }
         }
     }
@@ -2736,7 +2788,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
                 continue;
             }
             if (material.canPlaceAt(world, pos)) {
-                world.setBlockState(pos, material, 11);
+                mutateReplace(pos, material, 11);
             }
         }
     }
@@ -2750,7 +2802,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             }
             BlockState state = world.getBlockState(pos);
             if (!state.isAir() && state.getHardness(world, pos) >= 0.0f && state.getHardness(world, pos) <= 8.0f) {
-                FallingBlockEntity.spawnFromBlock(world, pos, state);
+                mutateSpawnFallingBlock(pos, state);
             }
         }
     }
@@ -2762,7 +2814,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             BlockPos pos = BlockPos.ofFloored(this.getPos().add(direction.multiply(i + 0.5)));
             BlockState state = world.getBlockState(pos);
             if (!state.isAir() && state.getHardness(world, pos) >= 0.0f && state.getHardness(world, pos) <= 12.0f) {
-                world.breakBlock(pos, shouldDropDugBlocks(), this, 16);
+                mutateBreak(pos, shouldDropDugBlocks());
             }
         }
     }
@@ -2777,18 +2829,18 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         }
         lightning.refreshPositionAfterTeleport(position);
         lightning.setCosmetic(cosmetic);
-        serverWorld.spawnEntity(lightning);
+        mutateSpawn(lightning);
     }
 
     private void explodeNoitaProjectile(float radius, boolean fire) {
-        this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), radius, fire, World.ExplosionSourceType.TNT);
+        mutateExplosion(this.getPos(), radius, fire);
         this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
         discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
     }
 
     private void detonateNearbyExplosives() {
         Box area = this.getBoundingBox().expand(8.0);
-        for (Entity entity : this.getWorld().getOtherEntities(this, area)) {
+        for (Entity entity : queryEntities(area)) {
             String entityPath = Registries.ENTITY_TYPE.getId(entity.getType()).getPath();
             if (entity instanceof BombEntity || entityPath.contains("tnt")) {
                 entity.damage(this.getDamageSources().indirectMagic(this, this.getOwner() == null ? this : this.getOwner()), 1000.0f);
@@ -2797,11 +2849,11 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         BlockPos center = this.getBlockPos();
         for (BlockPos pos : BlockPos.iterate(center.add(-4, -4, -4), center.add(4, 4, 4))) {
             if (this.getWorld().getBlockState(pos).isOf(Blocks.TNT)) {
-                this.getWorld().breakBlock(pos, false, this, 16);
-                this.getWorld().createExplosion(this, pos.getX() + 0.5, pos.getY() + 0.5, pos.getZ() + 0.5, 4.0f, true, World.ExplosionSourceType.TNT);
+                mutateBreak(pos, false);
+                mutateExplosion(Vec3d.ofCenter(pos), 4.0f, true);
             }
         }
-        this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), 1.2f, false, World.ExplosionSourceType.TNT);
+        mutateExplosion(this.getPos(), 1.2f, false);
     }
 
     private void rotateVelocity(double radians) {
