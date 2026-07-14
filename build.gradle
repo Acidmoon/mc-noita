@@ -45,6 +45,9 @@ loom {
         gametest {
             inherit server
             name "MC Noita Game Tests"
+            // The GameTest mod is intentionally test-only, so the production
+            // server run must opt into its source set explicitly.
+            source sourceSets.gameTest
             vmArg "-Dfabric-api.gametest"
             vmArg "-Dfabric-api.gametest.report-file=${file("build/gametest-results.xml")}"
             runDir "build/gametest"
@@ -163,11 +166,21 @@ tasks.register("verifyG00") {
     dependsOn "checkSpellCatalog", "test", "gameTest", "smokeDedicatedServer", "build"
 }
 
+tasks.register("verifyG02") {
+    group = "verification"
+    description = "Runs G02 JUnit, Fabric GameTest, dedicated-server smoke, and production build checks."
+    dependsOn "checkSpellCatalog", "test", "gameTest", "runGametest", "smokeDedicatedServer", "build"
+}
+
 tasks.named("gameTest") {
     mustRunAfter "test"
 }
 
 tasks.named("smokeDedicatedServer") {
+    mustRunAfter "runGametest"
+}
+
+tasks.named("runGametest") {
     mustRunAfter "gameTest"
 }
 

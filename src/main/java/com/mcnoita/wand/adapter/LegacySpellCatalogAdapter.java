@@ -22,6 +22,7 @@ import com.mcnoita.spell.action.SpellCatalog;
 import com.mcnoita.spell.action.SpellCategory;
 import com.mcnoita.spell.action.SpellDefinition;
 import com.mcnoita.spell.action.TimingAction;
+import com.mcnoita.spell.action.TimingOperation;
 import com.mcnoita.spell.plan.ProjectileDefinition;
 import com.mcnoita.spell.plan.ShotModifier;
 import com.mcnoita.spell.plan.TriggerMode;
@@ -64,6 +65,12 @@ public final class LegacySpellCatalogAdapter {
                 actions.add(new RandomSpellAction(category(template.type())));
             } else {
                 actions.add(new AddProjectileAction(projectile(spec)));
+                if (id.getPath().equals("chainsaw")) {
+                    // Fixed gun_actions.lua uses assignment, not addition, for
+                    // c.fire_rate_wait. Its -10 reload adjustment is already
+                    // carried by the frozen projectile definition.
+                    actions.add(new TimingAction(TimingOperation.SET, 0.0, TimingOperation.ADD, 0.0));
+                }
                 if (template.triggerMode() != NoitaSpellTriggerMode.NONE && template.triggerDrawCount() > 0) {
                     actions.add(new BeginTriggerAction(triggerMode(template.triggerMode()), template.triggerDrawCount()));
                 }

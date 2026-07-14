@@ -14,6 +14,8 @@ import com.mcnoita.spell.action.SpellCatalog;
 import com.mcnoita.spell.action.SpellCategory;
 import com.mcnoita.spell.action.SpellDefinition;
 import com.mcnoita.spell.action.TimingAction;
+import com.mcnoita.spell.action.TimingOperation;
+import com.mcnoita.spell.action.UseConsumptionPolicy;
 import com.mcnoita.spell.plan.BudgetUsage;
 import com.mcnoita.spell.plan.CastBudget;
 import com.mcnoita.spell.plan.CastDiagnostic;
@@ -22,6 +24,7 @@ import com.mcnoita.spell.plan.ProjectileDefinition;
 import com.mcnoita.spell.plan.ProjectilePlan;
 import com.mcnoita.spell.plan.RecoilPlan;
 import com.mcnoita.spell.plan.ResolvedCast;
+import com.mcnoita.spell.plan.ShotModifier;
 import com.mcnoita.spell.plan.ShotState;
 import com.mcnoita.spell.plan.SoundPlan;
 import com.mcnoita.spell.plan.TriggerMode;
@@ -33,16 +36,14 @@ import com.mcnoita.wand.model.WandDefinition;
 import com.mcnoita.wand.model.WandState;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 
 /**
- * The only mutable workspace used while evaluating a cast. It owns Draw, Call,
- * Wrap, trigger branches and accounting; no Minecraft object can enter it.
+ * The mutable, pure workspace for one cast. Draw is intentionally centralized:
+ * no SpellAction may move cards between piles or charge mana on its own.
  */
 public final class WandCastSession {
     private final WandDefinition wand;
@@ -59,8 +60,10 @@ public final class WandCastSession {
     private final List<SoundPlan> sounds = new ArrayList<>();
     private final List<RecoilPlan> recoils = new ArrayList<>();
     private final List<CastDiagnostic> diagnostics = new ArrayList<>();
+    private final List<DrawOutcome> drawOutcomes = new ArrayList<>();
     private final List<String> actionPath = new ArrayList<>();
-    private final Set<CardRef> normalProjectileCards = new HashSet<>();
+    private final TimingAccumulator castDelayTiming;
+    private final TimingAccumulator rechargeTiming;
 
     private List<MutableProjectile> projectileSink = rootProjectiles;
     private MutableProjectile lastProjectile;
@@ -69,11 +72,10 @@ public final class WandCastSession {
     private NoitaDuration castDelayRemaining;
     private NoitaDuration rechargeRemaining;
     private boolean rechargePending;
-    private boolean actionDrawWrapped;
-    private boolean refreshed;
+    private boolean reloading;
+    private boolean startReload;
+    private int refreshCount;
     private boolean inPayload;
-    private double globalCastDelayFrames;
-    private double globalRechargeFrames;
     private int recursiveCallDepth;
     private int payloadDepth;
     private int actionSteps;
@@ -104,6 +106,8 @@ public final class WandCastSession {
         this.castDelayRemaining = originalState.castDelayRemaining();
         this.rechargeRemaining = originalState.rechargeRemaining();
         this.rechargePending = originalState.rechargePending();
+        this.castDelayTiming = new TimingAccumulator(wand.castDelay().frames());
+        this.rechargeTiming = new TimingAccumulator(wand.rechargeTime().frames());
     }
 
     public ResolvedCast evaluate() {
@@ -114,26 +118,22 @@ public final class WandCastSession {
                 return result(ResolvedCast.Status.REJECTED, currentState(), EffectPlan.empty());
             }
 
-            for (String alwaysCastId : wand.alwaysCastSpellIds()) {
-                SpellDefinition definition = catalog.definitions().get(alwaysCastId);
-                if (definition == null) {
-                    diagnostics.add(diagnostic("UNKNOWN_ALWAYS_CAST", alwaysCastId, 0, 0));
-                    continue;
-                }
-                executeDefinition(definition, null, true);
-            }
-            drawMany(wand.spellsPerCast(), false, false);
+            playAlwaysCastCards();
+            draw(DrawRequest.initial(wand.spellsPerCast()));
             finishHand();
 
-            boolean shouldRecharge = !cards.isEmpty() && (actionDrawWrapped || deck.isEmpty());
-            NoitaDuration finalCastDelay = durationWithDelta(wand.castDelay(), globalCastDelayFrames);
-            NoitaDuration finalRecharge = durationWithDelta(wand.rechargeTime(), globalRechargeFrames);
+            boolean shouldReload = !cards.isEmpty() && (deck.isEmpty() || startReload);
+            if (shouldReload) {
+                reloadDeck();
+            }
+            NoitaDuration finalCastDelay = castDelayTiming.duration();
+            NoitaDuration finalRecharge = shouldReload ? rechargeTiming.duration() : NoitaDuration.ZERO;
             WandState next = new WandState(
                 new DeckState(cards, deck, hand, discard),
-                clampMana(mana),
+                settledMana(),
                 finalCastDelay,
-                shouldRecharge ? finalRecharge : NoitaDuration.ZERO,
-                shouldRecharge,
+                finalRecharge,
+                !finalRecharge.isZero(),
                 originalState.revision() + 1,
                 originalState.stateHash()
             );
@@ -148,73 +148,134 @@ public final class WandCastSession {
     }
 
     private void advanceTime() {
-        double restoredMana = elapsed.frames() / NoitaDuration.FRAMES_PER_SECOND * wand.manaChargePerSecond();
-        mana = clampMana(mana + restoredMana);
-        boolean rechargeCompleted = !rechargeRemaining.isZero() && elapsed.frames() >= rechargeRemaining.frames();
+        if (!elapsed.isZero()) {
+            double restoredMana = elapsed.frames() / NoitaDuration.FRAMES_PER_SECOND * wand.manaChargePerSecond();
+            // Mana gain from a card may exceed the cap while preloading, but time-based recovery never does.
+            mana = Math.min(wand.manaMax(), Math.max(0.0, mana + restoredMana));
+        }
         castDelayRemaining = castDelayRemaining.minusFloorZero(elapsed);
         rechargeRemaining = rechargeRemaining.minusFloorZero(elapsed);
-        if (rechargeCompleted && rechargePending) {
-            deck.clear();
-            deck.addAll(order(cards.keySet(), "reload"));
-            hand.clear();
-            discard.clear();
-            rechargePending = false;
-        }
+        rechargePending = !rechargeRemaining.isZero();
     }
 
     private boolean isReady() {
         return castDelayRemaining.isZero() && rechargeRemaining.isZero();
     }
 
-    private void drawMany(int amount, boolean canWrap, boolean permanent) {
-        if (permanent) {
-            return;
-        }
-        for (int drawn = 0; drawn < amount;) {
-            consumeAction("DRAW");
-            if (deck.isEmpty()) {
-                if (canWrap && !discard.isEmpty()) {
-                    deck.addAll(order(discard, "wrap"));
-                    discard.clear();
-                    actionDrawWrapped = true;
-                    continue;
-                }
-                return;
-            }
-
-            CardRef ref = deck.remove(0);
-            SpellCardState card = cards.get(ref);
-            if (card == null || !card.hasUsesRemaining()) {
-                discard.add(ref);
-                continue;
-            }
-            SpellDefinition definition = catalog.definitions().get(card.spellId());
+    private void playAlwaysCastCards() {
+        for (String alwaysCastId : wand.alwaysCastSpellIds()) {
+            SpellDefinition definition = catalog.definitions().get(alwaysCastId);
             if (definition == null) {
-                discard.add(ref);
-                diagnostics.add(diagnostic("UNKNOWN_SPELL", card.spellId(), 0, 0));
-                continue;
-            }
-            if (definition.manaCost() > mana) {
-                discard.add(ref);
-                diagnostics.add(diagnostic("INSUFFICIENT_MANA", definition.id(), (int) Math.ceil(definition.manaCost()), (int) Math.floor(mana)));
+                diagnostics.add(diagnostic("UNKNOWN_ALWAYS_CAST", alwaysCastId, 0, 0));
                 continue;
             }
 
-            mana -= definition.manaCost();
-            hand.add(ref);
-            executeDefinition(definition, ref, false);
-            drawn++;
+            // gun.lua's _play_permanent_card bypasses positive mana but explicitly calls
+            // handle_mana_addition, which preserves Add Mana's negative-cost behavior.
+            if (definition.manaCost() < 0) {
+                mana -= definition.manaCost();
+            }
+            executeDefinition(definition, null, ExecutionScope.PERMANENT);
         }
     }
 
-    private void executeDefinition(SpellDefinition definition, CardRef origin, boolean permanent) {
+    /**
+     * Runs one typed Draw request. Failed cards are discarded and retried while
+     * candidates remain. A failure that consumes the last candidate terminates
+     * this request before it can Wrap back to the same round of cards.
+     */
+    private DrawOutcome draw(DrawRequest request) {
+        List<CardRef> drawnCards = new ArrayList<>();
+        List<DrawFailure> failures = new ArrayList<>();
+        boolean wrapped = false;
+        boolean deckExhausted = deck.isEmpty();
+        int completedDraws = 0;
+
+        for (int requestIndex = 0; requestIndex < request.amount(); requestIndex++) {
+            if (reloading) {
+                deckExhausted = deck.isEmpty();
+                break;
+            }
+            consumeAction("DRAW");
+
+            if (deck.isEmpty()) {
+                if (request.allowsWrap() && !discard.isEmpty()) {
+                    wrapDeck();
+                    wrapped = true;
+                } else {
+                    reloading = true;
+                    deckExhausted = true;
+                    break;
+                }
+            }
+
+            boolean completed = false;
+            while (!deck.isEmpty()) {
+                CardRef ref = deck.remove(0);
+                SpellCardState card = cards.get(ref);
+                if (card == null) {
+                    discard.add(ref);
+                    failures.add(new DrawFailure(ref, DrawFailureReason.UNKNOWN_SPELL));
+                    continue;
+                }
+                if (!card.hasUsesRemaining()) {
+                    discard.add(ref);
+                    failures.add(new DrawFailure(ref, DrawFailureReason.DEPLETED_USES));
+                    continue;
+                }
+                SpellDefinition definition = catalog.definitions().get(card.spellId());
+                if (definition == null) {
+                    discard.add(ref);
+                    failures.add(new DrawFailure(ref, DrawFailureReason.UNKNOWN_SPELL));
+                    diagnostics.add(diagnostic("UNKNOWN_SPELL", card.spellId(), 0, 0));
+                    continue;
+                }
+                if (definition.manaCost() > mana) {
+                    discard.add(ref);
+                    failures.add(new DrawFailure(ref, DrawFailureReason.INSUFFICIENT_MANA));
+                    diagnostics.add(diagnostic("INSUFFICIENT_MANA", definition.id(),
+                        (int) Math.ceil(definition.manaCost()), (int) Math.floor(mana)));
+                    continue;
+                }
+
+                // This is the only normal-draw charge point. Negative MANA_REDUCE
+                // costs therefore add mana before the next candidate is evaluated.
+                mana -= definition.manaCost();
+                hand.add(ref);
+                drawnCards.add(ref);
+                completed = true;
+                completedDraws++;
+                executeDefinition(definition, ref, ExecutionScope.NORMAL);
+                break;
+            }
+
+            deckExhausted = deck.isEmpty();
+            if (!completed && deckExhausted) {
+                // Do not let a failed final card cause an immediate Wrap in the same request.
+                break;
+            }
+        }
+
+        DrawOutcome outcome = new DrawOutcome(request.origin(), request.amount(), completedDraws, drawnCards, failures,
+            deckExhausted, wrapped, startReload, reloading);
+        drawOutcomes.add(outcome);
+        return outcome;
+    }
+
+    private void wrapDeck() {
+        deck.addAll(order(discard, "wrap"));
+        discard.clear();
+        startReload = true;
+    }
+
+    private void executeDefinition(SpellDefinition definition, CardRef origin, ExecutionScope scope) {
         String previousSpellId = currentSpellId;
         currentSpellId = definition.id();
         actionPath.add(definition.id());
         try {
             for (SpellAction action : definition.actions()) {
                 consumeAction(definition.id());
-                executeAction(action, definition, origin, permanent);
+                executeAction(action, definition, origin, scope);
             }
         } finally {
             actionPath.remove(actionPath.size() - 1);
@@ -222,38 +283,58 @@ public final class WandCastSession {
         }
     }
 
-    private void executeAction(SpellAction action, SpellDefinition definition, CardRef origin, boolean permanent) {
+    private void executeAction(SpellAction action, SpellDefinition definition, CardRef origin, ExecutionScope scope) {
         if (action instanceof ModifyShotAction modify) {
             shotState = shotState.applyModifier(modify.modifier());
-        } else if (action instanceof DrawAction draw) {
-            drawMany(draw.amount(), true, permanent);
+            applyModifierTiming(modify.modifier());
+        } else if (action instanceof DrawAction drawAction) {
+            // Fixed gun.lua behavior: a permanently attached modifier's single
+            // Draw does not add a second card to a one-spell cast. Higher counts
+            // remain real action Draw requests and preserve their Wrap behavior.
+            if (scope != ExecutionScope.PERMANENT || drawAction.amount() > 1) {
+                draw(scope == ExecutionScope.PERMANENT
+                    ? DrawRequest.permanent(drawAction.amount())
+                    : DrawRequest.action(drawAction.amount()));
+            }
         } else if (action instanceof AddProjectileAction add) {
-            addProjectile(add.projectile(), origin);
+            addProjectile(add.projectile());
         } else if (action instanceof BeginTriggerAction trigger) {
             beginTrigger(trigger);
         } else if (action instanceof CallSpellAction call) {
             callSpell(call.selection());
         } else if (action instanceof DuplicateHandAction) {
-            duplicateHand(definition.id(), permanent);
+            duplicateHand(definition.id(), scope);
         } else if (action instanceof RefreshWandAction) {
             refreshWand();
         } else if (action instanceof RandomSpellAction random) {
             resolveRandomSpell(random.category());
         } else if (action instanceof TimingAction timing) {
-            if (!inPayload) {
-                globalCastDelayFrames += timing.castDelayFrames();
-            }
-            globalRechargeFrames += timing.rechargeFrames();
+            applyTiming(timing);
         }
     }
 
-    private void addProjectile(ProjectileDefinition source, CardRef origin) {
-        reserveProjectiles(source.projectileCount());
+    private void applyModifierTiming(ShotModifier modifier) {
         if (!inPayload) {
-            globalCastDelayFrames += source.castDelayFrames() + shotState.castDelayFrames();
+            castDelayTiming.apply(TimingOperation.ADD, modifier.castDelayFrames());
         }
-        // Noita trigger payload cast delay is isolated, but its recharge change stays global.
-        globalRechargeFrames += source.rechargeFrames() + shotState.rechargeFrames();
+        rechargeTiming.apply(TimingOperation.ADD, modifier.rechargeFrames());
+    }
+
+    private void applyTiming(TimingAction timing) {
+        if (!inPayload) {
+            castDelayTiming.apply(timing.castDelayOperation(), timing.castDelayFrames());
+        }
+        rechargeTiming.apply(timing.rechargeOperation(), timing.rechargeFrames());
+    }
+
+    private void addProjectile(ProjectileDefinition source) {
+        reserveProjectiles(source.projectileCount());
+        // A projectile action runs once even if its plan expands to many entities.
+        if (!inPayload) {
+            castDelayTiming.apply(TimingOperation.ADD, source.castDelayFrames());
+        }
+        // Payload recharge is global in Noita; payload cast delay remains branch-local.
+        rechargeTiming.apply(TimingOperation.ADD, source.rechargeFrames());
         double divergence = wand.spreadDegrees() + source.spreadDegrees() + shotState.spreadDegrees();
         double spreadOffset = divergence == 0.0 ? 0.0 : (rng.nextDouble("spread") - 0.5) * divergence;
         List<String> effects = new ArrayList<>(source.effects());
@@ -274,9 +355,6 @@ public final class WandCastSession {
         if (!inPayload) {
             sounds.add(new SoundPlan(source.behavior().equals("FUSED_EXPLOSIVE") ? SoundPlan.SoundKind.FUSED_EXPLOSIVE_CAST : SoundPlan.SoundKind.PROJECTILE_CAST));
             recoils.add(new RecoilPlan(shotState.recoil()));
-            if (origin != null) {
-                normalProjectileCards.add(origin);
-            }
         }
     }
 
@@ -301,7 +379,7 @@ public final class WandCastSession {
             shotState = ShotState.EMPTY;
             projectileSink = payloads;
             lastProjectile = null;
-            drawMany(trigger.drawCount(), true, false);
+            draw(DrawRequest.payload(trigger.drawCount()));
             previousLast.triggerMode = trigger.mode();
             previousLast.payloads.addAll(payloads);
         } finally {
@@ -333,17 +411,14 @@ public final class WandCastSession {
             recursiveCallDepth++;
         }
         try {
-            executeDefinition(definition, null, false);
+            executeDefinition(definition, null, ExecutionScope.CALLED);
         } finally {
             recursiveCallDepth = previousDepth;
         }
     }
 
     private CardRef findCallTarget(CallSelection selection) {
-        if (selection == CallSelection.FIRST_AVAILABLE) {
-            return firstCopyable(discard, hand, deck);
-        }
-        return lastCopyable(deck, hand, discard);
+        return selection == CallSelection.FIRST_AVAILABLE ? firstCopyable(discard, hand, deck) : lastCopyable(deck, hand, discard);
     }
 
     @SafeVarargs
@@ -371,39 +446,33 @@ public final class WandCastSession {
         return null;
     }
 
-    private void duplicateHand(String duplicateSpellId, boolean permanent) {
-        if (permanent) {
+    private void duplicateHand(String duplicateSpellId, ExecutionScope scope) {
+        if (scope == ExecutionScope.PERMANENT) {
             return;
         }
         for (CardRef ref : List.copyOf(hand)) {
             SpellDefinition target = catalog.definitions().get(cards.get(ref).spellId());
             if (target != null && !target.id().equals(duplicateSpellId)) {
-                executeDefinition(target, null, false);
+                executeDefinition(target, null, ExecutionScope.CALLED);
             }
         }
-        drawMany(1, true, false);
+        draw(DrawRequest.action(1));
     }
 
     private void refreshWand() {
-        if (refreshed) {
-            actionDrawWrapped = true;
+        if (refreshCount++ > 0) {
+            // gun.lua only performs the first pile reset; later calls request a recharge.
+            startReload = true;
             return;
         }
-        refreshed = true;
-        addUnique(discard, hand);
-        addUnique(discard, deck);
+        List<CardRef> allCards = new ArrayList<>(hand.size() + deck.size() + discard.size());
+        allCards.addAll(hand);
+        allCards.addAll(deck);
+        allCards.addAll(discard);
         hand.clear();
         deck.clear();
-        deck.addAll(order(discard, "wand-refresh"));
         discard.clear();
-    }
-
-    private static void addUnique(List<CardRef> target, List<CardRef> source) {
-        for (CardRef ref : source) {
-            if (!target.contains(ref)) {
-                target.add(ref);
-            }
-        }
+        deck.addAll(order(allCards, "wand-refresh"));
     }
 
     private void resolveRandomSpell(SpellCategory category) {
@@ -419,22 +488,46 @@ public final class WandCastSession {
             return;
         }
         SpellDefinition chosen = candidates.get(rng.nextInt("random-spell:" + category.name(), candidates.size()));
-        executeDefinition(chosen, null, false);
+        executeDefinition(chosen, null, ExecutionScope.CALLED);
     }
 
     private void finishHand() {
-        for (CardRef ref : hand) {
-            if (!discard.contains(ref)) {
-                discard.add(ref);
-            }
-        }
-        hand.clear();
-        for (CardRef ref : normalProjectileCards) {
+        boolean projectileShot = hand.stream().map(cards::get).filter(Objects::nonNull)
+            .map(card -> catalog.definitions().get(card.spellId())).filter(Objects::nonNull)
+            .map(SpellDefinition::category).anyMatch(this::isProjectileCategory);
+
+        for (CardRef ref : List.copyOf(hand)) {
             SpellCardState card = cards.get(ref);
-            if (card != null && card.remainingUses() > 0) {
+            SpellDefinition definition = card == null ? null : catalog.definitions().get(card.spellId());
+            if (card != null && definition != null && card.remainingUses() > 0
+                && shouldConsumeUse(definition.useConsumptionPolicy(), projectileShot)) {
                 cards.put(ref, card.withRemainingUses(card.remainingUses() - 1));
             }
+            discard.add(ref);
         }
+        hand.clear();
+    }
+
+    private boolean isProjectileCategory(SpellCategory category) {
+        return category == SpellCategory.PROJECTILE || category == SpellCategory.STATIC_PROJECTILE || category == SpellCategory.MATERIAL;
+    }
+
+    private static boolean shouldConsumeUse(UseConsumptionPolicy policy, boolean projectileShot) {
+        return switch (policy) {
+            case WHEN_PROJECTILE_SHOT -> projectileShot;
+            case ALWAYS_ON_HAND_DISCARD -> true;
+            case NEVER -> false;
+        };
+    }
+
+    /** Reload is evaluated now so the persisted Deck order comes from this cast's seed. */
+    private void reloadDeck() {
+        List<CardRef> nextDeck = new ArrayList<>(deck.size() + discard.size());
+        nextDeck.addAll(deck);
+        nextDeck.addAll(discard);
+        deck.clear();
+        discard.clear();
+        deck.addAll(order(nextDeck, "reload"));
     }
 
     private void reserveProjectiles(int count) {
@@ -470,7 +563,7 @@ public final class WandCastSession {
     }
 
     private WandState currentState() {
-        return new WandState(new DeckState(cards, deck, hand, discard), clampMana(mana), castDelayRemaining,
+        return new WandState(new DeckState(cards, deck, hand, discard), settledMana(), castDelayRemaining,
             rechargeRemaining, rechargePending, originalState.revision(), originalState.stateHash());
     }
 
@@ -479,7 +572,7 @@ public final class WandCastSession {
         for (Map.Entry<CardRef, SpellCardState> entry : nextState.deckState().cards().entrySet()) {
             remainingUses.put(entry.getKey(), entry.getValue().remainingUses());
         }
-        return new ResolvedCast(status, nextState, plan, remainingUses,
+        return new ResolvedCast(status, nextState, plan, remainingUses, drawOutcomes,
             nextState.castDelayRemaining(), nextState.rechargeRemaining(), rng.rootSeed(), catalog.epoch(), catalog.hash(),
             new BudgetUsage(actionSteps, projectileNodes, payloadNodes), diagnostics);
     }
@@ -492,12 +585,11 @@ public final class WandCastSession {
         return new BudgetExceeded(diagnostic(code, currentSpellId, used, limit));
     }
 
-    private double clampMana(double value) {
-        return Math.max(0.0, Math.min(wand.manaMax(), value));
-    }
-
-    private static NoitaDuration durationWithDelta(NoitaDuration base, double deltaFrames) {
-        return NoitaDuration.frames(Math.max(0.0, base.frames() + deltaFrames));
+    private double settledMana() {
+        // The local Wiki record states that preloading may exceed manaMax, but the
+        // overflow is removed when preloading completes. Keep it available only
+        // while this session evaluates later cards.
+        return Math.max(0.0, Math.min(wand.manaMax(), mana));
     }
 
     private static List<ProjectilePlan> freeze(List<MutableProjectile> mutableProjectiles) {
@@ -511,6 +603,28 @@ public final class WandCastSession {
                 projectile.bounceCount, projectile.effects, freeze(projectile.payloads)));
         }
         return List.copyOf(plans);
+    }
+
+    private enum ExecutionScope {
+        NORMAL,
+        CALLED,
+        PERMANENT
+    }
+
+    private static final class TimingAccumulator {
+        private double frames;
+
+        private TimingAccumulator(double frames) {
+            this.frames = frames;
+        }
+
+        private void apply(TimingOperation operation, double value) {
+            frames = operation == TimingOperation.SET ? value : frames + value;
+        }
+
+        private NoitaDuration duration() {
+            return NoitaDuration.frames(Math.max(0.0, frames));
+        }
     }
 
     private static final class MutableProjectile {

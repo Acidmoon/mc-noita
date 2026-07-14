@@ -11,7 +11,7 @@ import net.minecraft.nbt.NbtElement;
  */
 public final class NoitaNbtSchema {
     public static final String VERSION_KEY = "SchemaVersion";
-    public static final int CURRENT_VERSION = 1;
+    public static final int CURRENT_VERSION = 2;
 
     private NoitaNbtSchema() {
     }
@@ -26,6 +26,7 @@ public final class NoitaNbtSchema {
         while (version < CURRENT_VERSION) {
             switch (version) {
                 case 0 -> migrateV0ToV1(data, kind);
+                case 1 -> migrateV1ToV2(data, kind);
                 default -> throw new IllegalStateException("No migration registered for " + kind.id + " v" + version);
             }
             version++;
@@ -42,6 +43,17 @@ public final class NoitaNbtSchema {
         // Keeping the migration explicit makes the future v1 -> v2 chain auditable.
         data.putInt(VERSION_KEY, 1);
         MCNoita.LOGGER.debug("Migrated {} NBT from v0 to v1", kind.id);
+    }
+
+    private static void migrateV1ToV2(NbtCompound data, Kind kind) {
+        if (kind == Kind.CAST_STATE) {
+            // G01 persisted an empty Deck until Recharge elapsed. G02 instead
+            // persists the seed-resolved next Deck at cast commit, so the adapter
+            // needs one explicit marker to recognize and rebuild old G01 reloads.
+            data.putBoolean("G02ReloadPrepared", false);
+        }
+        data.putInt(VERSION_KEY, 2);
+        MCNoita.LOGGER.debug("Migrated {} NBT from v1 to v2", kind.id);
     }
 
     public enum Kind {

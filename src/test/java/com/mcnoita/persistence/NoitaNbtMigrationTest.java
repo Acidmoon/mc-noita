@@ -34,6 +34,22 @@ class NoitaNbtMigrationTest {
     }
 
     @Test
+    void g01CastStateMigratesToThePreparedReloadSchema() {
+        NbtCompound g01 = new NbtCompound();
+        g01.putInt(NoitaNbtSchema.VERSION_KEY, 1);
+        g01.putLong("RechargeEndTick", 120L);
+        NbtList discarded = new NbtList();
+        discarded.add(net.minecraft.nbt.NbtInt.of(0));
+        discarded.add(net.minecraft.nbt.NbtInt.of(1));
+        g01.put("Discarded", discarded);
+
+        assertTrue(NoitaNbtSchema.migrateToCurrent(g01, NoitaNbtSchema.Kind.CAST_STATE));
+        assertEquals(2, g01.getInt(NoitaNbtSchema.VERSION_KEY));
+        assertFalse(g01.getBoolean("G02ReloadPrepared"));
+        assertEquals(2, g01.getList("Discarded", net.minecraft.nbt.NbtElement.INT_TYPE).size());
+    }
+
+    @Test
     void futureTemplateVersionIsRejectedWithoutMutatingTheInput() {
         NbtCompound future = template().toNbt();
         future.putInt(NoitaNbtSchema.VERSION_KEY, 99);

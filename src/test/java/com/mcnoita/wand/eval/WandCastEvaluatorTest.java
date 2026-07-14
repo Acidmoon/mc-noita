@@ -20,6 +20,7 @@ import com.mcnoita.spell.plan.ResolvedCast;
 import com.mcnoita.spell.plan.ShotModifier;
 import com.mcnoita.spell.plan.TriggerMode;
 import com.mcnoita.wand.model.CardRef;
+import com.mcnoita.wand.model.DeckState;
 import com.mcnoita.wand.model.NoitaDuration;
 import com.mcnoita.wand.model.SpellCardState;
 import com.mcnoita.wand.model.WandState;
@@ -51,12 +52,16 @@ class WandCastEvaluatorTest {
         for (int slot = 0; slot < 8; slot++) {
             cards.add(PureWandFixtures.card(slot, "bolt"));
         }
-        WandState readyToReload = new WandState(PureWandFixtures.state(100.0, cards).deckState(), 100.0,
-            NoitaDuration.ZERO, NoitaDuration.frames(3), true, 0L, 17);
+        WandState readyToReload = new WandState(new DeckState(
+            PureWandFixtures.state(100.0, cards).deckState().cards(),
+            List.of(),
+            List.of(),
+            cards.stream().map(SpellCardState::ref).toList()
+        ), 100.0, NoitaDuration.ZERO, NoitaDuration.ZERO, false, 0L, 17);
         WandCastEvaluator evaluator = new WandCastEvaluator();
 
-        ResolvedCast first = evaluator.evaluate(PureWandFixtures.wand(1, true), readyToReload, PureWandFixtures.catalog(bolt), NoitaDuration.frames(3), 1L);
-        ResolvedCast second = evaluator.evaluate(PureWandFixtures.wand(1, true), readyToReload, PureWandFixtures.catalog(bolt), NoitaDuration.frames(3), 2L);
+        ResolvedCast first = evaluator.evaluate(PureWandFixtures.wand(1, true), readyToReload, PureWandFixtures.catalog(bolt), NoitaDuration.ZERO, 1L);
+        ResolvedCast second = evaluator.evaluate(PureWandFixtures.wand(1, true), readyToReload, PureWandFixtures.catalog(bolt), NoitaDuration.ZERO, 2L);
 
         Set<CardRef> expected = new HashSet<>(readyToReload.deckState().cards().keySet());
         Set<CardRef> firstCards = allCards(first.nextState());

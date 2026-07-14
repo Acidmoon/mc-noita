@@ -1,4 +1,4 @@
-# G00 Test Facilities
+# G00-G02 Test Facilities
 
 ## Commands
 
@@ -12,6 +12,16 @@ The task runs the catalog check, JUnit suite, isolated GameTest fixture suite,
 dedicated-server smoke test, and production build. `generateSpellCatalog` is
 deterministic; a second execution must not change the generated JSON or report.
 
+Run the G02 gate from the repository root:
+
+```powershell
+.\gradlew.bat verifyG02
+```
+
+`verifyG02` additionally runs `runGametest`, which starts Fabric's headless
+GameTest server. This is distinct from the isolated `gameTest` JUnit fixture
+task: it exercises the test-only Fabric mod inside a real `ServerWorld`.
+
 ## JUnit Tags
 
 - `characterization` records observed current behavior and catalog facts.
@@ -21,23 +31,23 @@ deterministic; a second execution must not change the generated JSON or report.
   and rate-limit behavior fixed in G00.
 
 Current stable tests cover catalog identity and resources, finite template
-values, v0 to v1 NBT migration, future-version rejection, slot and payload
+values, v0 to v2 NBT migration, future-version rejection, slot and payload
 limits, packet round trips, malformed input rejection, replay/order checks,
 and independent token buckets.
 
 ## GameTest Layout
 
 `src/gametest` is a test-only Fabric mod and is excluded from the release JAR.
-It declares ten fixed-tick, empty-structure scenarios for Starter Wand, Spark
+It declares eleven fixed-tick, empty-structure scenarios for Starter Wand, Spark
 Bolt, Bomb, Double Spell, Damage Plus, Trigger, Wand Refresh, Alpha, Gamma,
-and payload save/reload. Every fixture resets time to tick zero, observes at
-tick 20, and removes entities before completion.
+payload save/reload, and the G02 two-round wand state machine. The G02 scenario
+creates a real server player, equips a three-Spark-Bolt Spells/Cast=2 wand,
+casts twice, compares persisted state against pure evaluation, and checks the
+actual 2 then 1 projectile spawn result.
 
-The current evaluator remains coupled to live Minecraft player state, so the
-ten world scenarios are invariant fixtures rather than claims that incorrect
-current spell semantics are golden behavior. G01 must connect the listed
-fixtures to the pure evaluator and replace each invariant with entity, damage,
-collision, use-consumption, and persistence assertions.
+Most pre-G02 world fixtures remain narrow lifecycle placeholders. G03 must add
+the Trigger/Timer/Piercing/Death collision, persistence, and exactly-once
+assertions before those mechanics are described as complete.
 
 ## Dedicated Server Smoke
 

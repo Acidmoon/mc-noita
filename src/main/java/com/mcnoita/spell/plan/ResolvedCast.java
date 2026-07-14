@@ -3,6 +3,7 @@ package com.mcnoita.spell.plan;
 import com.mcnoita.wand.model.CardRef;
 import com.mcnoita.wand.model.NoitaDuration;
 import com.mcnoita.wand.model.WandState;
+import com.mcnoita.wand.eval.DrawOutcome;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -15,6 +16,7 @@ public record ResolvedCast(
     WandState nextState,
     EffectPlan effectPlan,
     Map<CardRef, Integer> remainingUses,
+    List<DrawOutcome> drawOutcomes,
     NoitaDuration castDelay,
     NoitaDuration rechargeTime,
     long randomSeed,
@@ -38,6 +40,7 @@ public record ResolvedCast(
         Objects.requireNonNull(catalogHash, "catalogHash");
         Objects.requireNonNull(budgetUsage, "budgetUsage");
         remainingUses = Collections.unmodifiableMap(new LinkedHashMap<>(remainingUses));
+        drawOutcomes = List.copyOf(drawOutcomes);
         diagnostics = List.copyOf(diagnostics);
     }
 }

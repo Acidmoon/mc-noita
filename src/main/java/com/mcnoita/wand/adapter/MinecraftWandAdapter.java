@@ -43,6 +43,7 @@ public final class MinecraftWandAdapter {
     private static final String CURRENT_MANA_KEY = "CurrentMana";
     private static final String LAST_MANA_TICK_KEY = "LastManaTick";
     private static final String REVISION_KEY = "StateRevision";
+    private static final String G02_RELOAD_PREPARED_KEY = "G02ReloadPrepared";
 
     private MinecraftWandAdapter() {
     }
@@ -62,13 +63,17 @@ public final class MinecraftWandAdapter {
         int spellsHash = spellsHash(spellStacks, legacyDefinition);
         List<CardRef> deck = readPile(persisted, DECK_KEY, cards, legacyDefinition.capacity());
         List<CardRef> discard = readPile(persisted, DISCARDED_KEY, cards, legacyDefinition.capacity());
+        long rechargeEnd = persisted.getLong(RECHARGE_END_TICK_KEY);
+        if (!persisted.getBoolean(G02_RELOAD_PREPARED_KEY) && rechargeEnd != 0L && deck.isEmpty() && !discard.isEmpty()) {
+            // G01 did this work when cooldown finished, using the next cast's
+            // seed. A legacy state cannot recover that seed, so migrate it once
+            // from stable persisted identity rather than caller/UI randomness.
+            deck = migrateG01ReloadDeck(discard, cards, definition.shuffle(), legacyReloadSeed(persisted, spellsHash));
+            discard = List.of();
+        }
 
         boolean reset = persisted.getInt(SPELLS_HASH_KEY) != spellsHash || persisted.contains(DRAW_INDEX_KEY, NbtElement.NUMBER_TYPE)
             || (deck.isEmpty() && discard.isEmpty() && !cards.isEmpty());
-        long rechargeEnd = persisted.getLong(RECHARGE_END_TICK_KEY);
-        if (rechargeEnd != 0L && rechargeEnd <= now) {
-            reset = true;
-        }
         if (reset) {
             deck = ordered(cards, definition.shuffle(), randomSeed, "initial");
             discard = List.of();
@@ -105,6 +110,9 @@ public final class MinecraftWandAdapter {
         persisted.putFloat(CURRENT_MANA_KEY, (float) Math.max(0.0, Math.min(loaded.definition().manaMax(), next.mana())));
         persisted.putLong(LAST_MANA_TICK_KEY, now);
         persisted.putLong(REVISION_KEY, next.revision());
+        // G02 writes a Deck that is already ordered/shuffled by the accepting
+        // evaluator. Cooldown expiry must only release time, never reshuffle it.
+        persisted.putBoolean(G02_RELOAD_PREPARED_KEY, true);
         writeCooldown(persisted, CAST_DELAY_START_TICK_KEY, NEXT_CAST_TICK_KEY, next.castDelayRemaining(), now);
         writeCooldown(persisted, RECHARGE_START_TICK_KEY, RECHARGE_END_TICK_KEY, next.rechargeRemaining(), now);
         applyRemainingUses(loaded.spellStacks(), legacyState.remainingUses());
@@ -192,6 +200,43 @@ public final class MinecraftWandAdapter {
             }
         }
         return List.copyOf(refs);
+    }
+
+    private static List<CardRef> ordered(
+        Iterable<CardRef> refs,
+        Map<CardRef, SpellCardState> cards,
+        boolean shuffle,
+        long seed,
+        String domain
+    ) {
+        List<CardRef> ordered = new ArrayList<>();
+        for (CardRef ref : refs) {
+            ordered.add(ref);
+        }
+        ordered.sort((left, right) -> Integer.compare(cards.get(left).slot(), cards.get(right).slot()));
+        if (shuffle) {
+            CastRng rng = new CastRng(seed);
+            for (int index = ordered.size() - 1; index > 0; index--) {
+                int other = rng.nextInt("shuffle:" + domain, index + 1);
+                Collections.swap(ordered, index, other);
+            }
+        }
+        return List.copyOf(ordered);
+    }
+
+    /** Visible to the adapter regression test without exposing Minecraft NBT to the pure evaluator. */
+    static List<CardRef> migrateG01ReloadDeck(
+        List<CardRef> g01Discard,
+        Map<CardRef, SpellCardState> cards,
+        boolean shuffle,
+        long migrationSeed
+    ) {
+        return ordered(g01Discard, cards, shuffle, migrationSeed, "g01-reload-migration");
+    }
+
+    private static long legacyReloadSeed(NbtCompound state, int spellsHash) {
+        long revision = Math.max(0L, state.getLong(REVISION_KEY));
+        return ((long) spellsHash << 32) ^ revision ^ 0x474F3132L;
     }
 
     private static List<Integer> slots(List<CardRef> refs, Map<CardRef, SpellCardState> cards) {
