@@ -1,5 +1,6 @@
 package com.mcnoita;
 
+import com.mcnoita.catalog.SpellCatalogService;
 import com.mcnoita.entity.ModEntities;
 import com.mcnoita.event.ModWandEvents;
 import com.mcnoita.item.ModItemGroups;
@@ -32,6 +33,7 @@ public class MCNoita implements ModInitializer {
         NoitaWandHudSync.register();
         ModWandEvents.register();
         ModItems.register();
+        SpellCatalogService.getInstance().initializeFromLegacy();
         ModItemGroups.register();
         LOGGER.info("Initializing MC Noita");
     }

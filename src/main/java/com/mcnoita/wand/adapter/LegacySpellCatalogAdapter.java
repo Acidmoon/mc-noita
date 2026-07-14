@@ -1,5 +1,6 @@
 package com.mcnoita.wand.adapter;
 
+import com.mcnoita.catalog.CanonicalCatalogHasher;
 import com.mcnoita.item.NoitaProjectileSpellItem;
 import com.mcnoita.item.NoitaSpellItem;
 import com.mcnoita.spell.NoitaModifierEffect;
@@ -32,6 +33,7 @@ import com.mcnoita.spell.plan.ShotModifier;
 import com.mcnoita.spell.plan.TriggerMode;
 import com.mcnoita.wand.model.NoitaDuration;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -49,7 +51,12 @@ public final class LegacySpellCatalogAdapter {
     private LegacySpellCatalogAdapter() {
     }
 
-    public static SpellCatalog createCatalog() {
+    /**
+     * Builds an immutable legacy definition set after built-in item registration.
+     * Registry access remains contained in this adapter so the catalog service and
+     * evaluator only receive pure definition values.
+     */
+    public static Map<String, SpellDefinition> createDefinitions() {
         Map<String, SpellDefinition> definitions = new LinkedHashMap<>();
         for (Item item : Registries.ITEM) {
             if (item instanceof NoitaSpellItem spellItem) {
@@ -57,7 +64,13 @@ public final class LegacySpellCatalogAdapter {
                 definitions.put(id.toString(), adapt(id, spellItem));
             }
         }
-        return new SpellCatalog(0L, Integer.toUnsignedString(definitions.hashCode(), 16), definitions);
+        return Collections.unmodifiableMap(new LinkedHashMap<>(definitions));
+    }
+
+    /** Compatibility bridge for callers that still construct a one-off catalog. */
+    public static SpellCatalog createCatalog() {
+        Map<String, SpellDefinition> definitions = createDefinitions();
+        return new SpellCatalog(0L, CanonicalCatalogHasher.sha256(definitions), definitions);
     }
 
     private static SpellDefinition adapt(Identifier id, NoitaSpellItem item) {

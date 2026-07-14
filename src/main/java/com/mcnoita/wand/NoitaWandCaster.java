@@ -1,10 +1,10 @@
 package com.mcnoita.wand;
 
+import com.mcnoita.catalog.SpellCatalogService;
 import com.mcnoita.item.NoitaWandItem;
 import com.mcnoita.spell.action.SpellCatalog;
 import com.mcnoita.spell.exec.MinecraftEffectExecutor;
 import com.mcnoita.spell.plan.ResolvedCast;
-import com.mcnoita.wand.adapter.LegacySpellCatalogAdapter;
 import com.mcnoita.wand.adapter.MinecraftWandAdapter;
 import com.mcnoita.wand.adapter.MinecraftExternalSpellPoolAdapter;
 import com.mcnoita.wand.eval.WandCastEvaluator;
@@ -44,7 +44,7 @@ public final class NoitaWandCaster {
         if (loaded == null) {
             return;
         }
-        SpellCatalog catalog = LegacySpellCatalogAdapter.createCatalog();
+        SpellCatalog catalog = SpellCatalogService.getInstance().current().catalog();
         ResolvedCast resolved = EVALUATOR.evaluate(loaded.definition(), loaded.state(), catalog, loaded.elapsed(),
             randomSeed, MinecraftExternalSpellPoolAdapter.fromOtherHotbarWands(player, wandStack));
         if (resolved.status() != ResolvedCast.Status.ACCEPTED) {
