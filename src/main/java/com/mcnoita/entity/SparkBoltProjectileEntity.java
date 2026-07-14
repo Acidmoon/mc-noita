@@ -11,9 +11,21 @@ import com.mcnoita.spell.NoitaProjectileBehavior;
 import com.mcnoita.spell.NoitaProjectilePayload;
 import com.mcnoita.spell.NoitaSpellDamage;
 import com.mcnoita.spell.NoitaSpellTriggerMode;
+import com.mcnoita.spell.NoitaTriggerPlan;
+import com.mcnoita.spell.trigger.CollisionKey;
+import com.mcnoita.spell.trigger.ProjectileTerminationCause;
+import com.mcnoita.spell.trigger.ReleaseDecision;
+import com.mcnoita.spell.trigger.TriggerEvent;
+import com.mcnoita.spell.trigger.TriggerPayloadController;
+import com.mcnoita.spell.trigger.TriggerPayloadSpawner;
+import com.mcnoita.spell.trigger.TriggerRuntimeBudget;
+import com.mcnoita.spell.trigger.TriggerRuntimeDiagnostics;
+import com.mcnoita.spell.trigger.TriggerRuntimeState;
+import com.mcnoita.spell.trigger.TriggerRuntimeStateNbtCodec;
 import com.mcnoita.world.NoitaTemporaryLightManager;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import net.minecraft.block.AbstractFireBlock;
 import net.minecraft.block.Blocks;
 import net.minecraft.block.BlockState;
@@ -66,10 +78,13 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     private static final String MODIFIER_EFFECTS_KEY = "ModifierEffects";
     private static final String TRIGGER_PAYLOAD_RELEASED_KEY = "TriggerPayloadReleased";
     private static final String TRIGGER_PAYLOADS_KEY = "TriggerPayloads";
+    private static final String FROZEN_PAYLOAD_KEY = "FrozenPayload";
+    private static final String TRIGGER_RUNTIME_STATE_KEY = "TriggerRuntimeState";
     private static final byte HIT_FLASH_STATUS = 3;
     private static final float CRITICAL_DAMAGE_MULTIPLIER = 5.0f;
     private static final int MAX_BOUNCES = 8;
     private static final int SPELL_EFFECT_INTERVAL_TICKS = 5;
+    private static final String LEGACY_RUNTIME_CATALOG_HASH = "legacy-runtime";
 
     private String itemPath = "spark_bolt";
     private NoitaProjectileBehavior behavior = NoitaProjectileBehavior.BOLT;
@@ -88,10 +103,11 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     private int bounceCount;
     private List<NoitaModifierEffect> modifierEffects = List.of();
     private int bounces;
-    private NoitaSpellTriggerMode triggerMode = NoitaSpellTriggerMode.NONE;
-    private int triggerDelayTicks;
-    private boolean triggerPayloadReleased;
-    private List<NoitaProjectilePayload> triggerPayloads = List.of();
+    private NoitaProjectilePayload frozenPayload;
+    private NoitaTriggerPlan triggerPlan = NoitaTriggerPlan.none("root");
+    private TriggerPayloadController triggerPayloadController = new TriggerPayloadController(
+        this.triggerPlan, TriggerRuntimeState.fresh(TriggerRuntimeBudget.DEFAULT)
+    );
     private Vec3d returnAnchor;
     private boolean summonReleased;
 
@@ -105,6 +121,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             payload.trailLightStacks(), payload.explosionRadius(), payload.gravity(), payload.drag(), payload.bounceDamping(), payload.renderScale(),
             payload.knockbackForce(), payload.friendlyFire(), payload.piercing(), payload.triggerMode(), payload.triggerDelayTicks(), payload.bounceCount(), payload.modifierEffects(),
             payload.payloads());
+        configureFrozenPayload(payload, TriggerRuntimeState.fresh(payload.runtimeBudget()));
     }
 
     public SparkBoltProjectileEntity(
@@ -147,9 +164,13 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         this.friendlyFire = friendlyFire;
         this.piercing = piercing || hasModifierEffect(NoitaModifierEffect.PIERCING_SHOT) || this.behavior.isBeamLike() || itemPathPiercesEntities(this.itemPath);
         this.bounceCount = Math.max(0, bounceCount);
-        this.triggerMode = triggerMode == null ? NoitaSpellTriggerMode.NONE : triggerMode;
-        this.triggerDelayTicks = Math.max(0, triggerDelayTicks);
-        this.triggerPayloads = List.copyOf(triggerPayloads);
+        NoitaProjectilePayload legacyPayload = new NoitaProjectilePayload(
+            this.itemPath, this.behavior, this.damage, this.criticalChancePercent, this.maxAge, this.trailLightStacks,
+            this.explosionRadius, 0.0f, 0.0f, this.gravity, this.drag, this.bounceDamping, this.renderScale,
+            this.knockbackForce, this.friendlyFire, this.piercing, 1, 0.0f, triggerMode, triggerDelayTicks,
+            this.bounceCount, this.modifierEffects, triggerPayloads == null ? List.of() : triggerPayloads
+        );
+        configureFrozenPayload(legacyPayload, TriggerRuntimeState.fresh(legacyPayload.runtimeBudget()));
         if (hasModifierEffect(NoitaModifierEffect.NOLLA)) {
             this.maxAge = 1;
         }
@@ -173,12 +194,15 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         this.noClip = ignoresWorldCollision();
         applyAmbientBehavior();
         super.tick();
+        // A non-piercing collision can discard the entity during super.tick().
+        // Do not let the same tick reach Timer expiry after terminal release.
+        if (this.isRemoved()) {
+            return;
+        }
 
         if (this.age > this.maxAge) {
-            if (!this.getWorld().isClient && this.triggerMode == NoitaSpellTriggerMode.DEATH) {
-                releaseTriggerPayload();
-            }
             if (!this.getWorld().isClient) {
+                releaseForTermination(ProjectileTerminationCause.NATURAL_EXPIRY);
                 onLifetimeExpired();
             }
             this.discard();
@@ -189,8 +213,16 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (world.isClient) {
             spawnTrailParticles();
         } else if (world instanceof ServerWorld serverWorld) {
-            if (this.triggerMode == NoitaSpellTriggerMode.TIMER && !this.triggerPayloadReleased && this.age >= this.triggerDelayTicks) {
-                releaseTriggerPayload();
+            // super.tick() processes collision first. A same-tick collision is
+            // therefore release sequence N and the one-shot timer expiry is N+1.
+            if (this.triggerPlan.mode() == NoitaSpellTriggerMode.TIMER
+                && !this.triggerPayloadController.state().timerExpired()) {
+                this.triggerPayloadController.advanceTimer();
+            }
+            if (this.triggerPlan.mode() == NoitaSpellTriggerMode.TIMER
+                && !this.triggerPayloadController.state().timerExpired()
+                && this.triggerPayloadController.state().timerElapsedTicks() >= this.triggerPlan.timerDelayTicks()) {
+                releaseTriggerPayload(TriggerEvent.timerExpired());
             }
             if (this.trailLightStacks > 0 || this.behavior.isBeamLike()) {
                 NoitaTemporaryLightManager.illuminateTrail(serverWorld, new Vec3d(this.prevX, this.prevY, this.prevZ), this.getPos(), this.trailLightStacks + 1);
@@ -248,6 +280,15 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             return;
         }
 
+        if (!isValidTriggerCollision(hitResult)) {
+            return;
+        }
+        if (ignoresTerminalCollision(hitResult)) {
+            applyNonTerminalCollisionEffect(hitResult);
+            return;
+        }
+        releaseTriggerPayload(TriggerEvent.collision(collisionKey(hitResult)));
+
         String path = normalizedItemPath();
         if (hitResult instanceof EntityHitResult && path.equals("exploding_deer")) {
             explodeNoitaProjectile(this.explosionRadius <= 0.0f ? 3.0f : this.explosionRadius, true);
@@ -256,25 +297,19 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (hitResult instanceof EntityHitResult && path.equals("summon_egg")) {
             hatchSummonedEgg();
             this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
-            this.discard();
+            discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
             return;
         }
         if (hitResult instanceof EntityHitResult && path.equals("summon_hollow_egg")) {
             burstHollowEgg();
-            releaseTriggerPayload();
             this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
-            this.discard();
+            discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
             return;
         }
         if (path.equals("spore_pod")) {
             burstSporePod();
             this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
-            this.discard();
-            return;
-        }
-
-        if (ignoresTerminalCollision(hitResult)) {
-            applyNonTerminalCollisionEffect(hitResult);
+            discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
             return;
         }
 
@@ -295,12 +330,9 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (this.behavior.explodesOnCollision() && this.explosionRadius > 0.0f) {
             this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), this.explosionRadius, true, World.ExplosionSourceType.TNT);
         }
-        if (this.triggerMode == NoitaSpellTriggerMode.HIT || this.triggerMode == NoitaSpellTriggerMode.DEATH) {
-            releaseTriggerPayload();
-        }
         this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
         if (!this.piercing) {
-            this.discard();
+            discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
         }
     }
 
@@ -339,102 +371,118 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         nbt.putBoolean(PIERCING_KEY, this.piercing);
         nbt.putInt(BOUNCE_COUNT_KEY, this.bounceCount);
         nbt.put(MODIFIER_EFFECTS_KEY, NoitaProjectilePayload.toEffectNbtList(this.modifierEffects));
-        nbt.putString(TRIGGER_MODE_KEY, this.triggerMode.name());
-        nbt.putInt(TRIGGER_DELAY_TICKS_KEY, this.triggerDelayTicks);
-        nbt.putBoolean(TRIGGER_PAYLOAD_RELEASED_KEY, this.triggerPayloadReleased);
-        nbt.put(TRIGGER_PAYLOADS_KEY, NoitaProjectilePayload.toNbtList(this.triggerPayloads));
+        NoitaProjectilePayload payload = bindLegacyRuntimeIdentity(currentFrozenPayload())
+            .withRuntimeBudget(this.triggerPayloadController.state().remainingBudget());
+        nbt.put(FROZEN_PAYLOAD_KEY, payload.toNbt());
+        nbt.put(TRIGGER_RUNTIME_STATE_KEY, TriggerRuntimeStateNbtCodec.toNbt(this.triggerPayloadController.state()));
+        // v3 writes only the authoritative frozen tree. Repeating a legacy
+        // flat projection can double a valid near-limit payload past the entity
+        // NBT cap; v0-v2 data remains supported by the read-side migrator.
     }
 
     @Override
     public void readCustomDataFromNbt(NbtCompound nbt) {
         super.readCustomDataFromNbt(nbt);
-        if (!NoitaNbtSchema.migrateToCurrent(nbt, NoitaNbtSchema.Kind.ENTITY)
-            || !NoitaNbtSafety.validateTree(nbt, NoitaNbtLimits.MAX_ENTITY_NBT_DEPTH, NoitaNbtLimits.MAX_ENTITY_NBT_NODES, NoitaNbtLimits.MAX_PAYLOAD_CHILDREN)
+        int storedSchemaVersion = NoitaNbtSchema.readStoredVersion(nbt);
+        boolean currentSchema = storedSchemaVersion == NoitaNbtSchema.CURRENT_VERSION;
+        if (nbt.getSizeInBytes() > NoitaNbtLimits.MAX_ENTITY_NBT_BYTES
+            || storedSchemaVersion < 0
+            || !NoitaNbtSchema.migrateToCurrent(nbt, NoitaNbtSchema.Kind.ENTITY)
+            || !NoitaNbtSafety.validateTree(nbt, NoitaNbtLimits.MAX_ENTITY_NBT_DEPTH, NoitaNbtLimits.MAX_ENTITY_NBT_NODES, NoitaNbtLimits.MAX_NBT_LIST_ENTRIES)
             || !NoitaNbtSafety.hasValidEnumIfPresent(nbt, BEHAVIOR_KEY, NoitaProjectileBehavior.class)
             || !NoitaNbtSafety.hasValidEnumIfPresent(nbt, TRIGGER_MODE_KEY, NoitaSpellTriggerMode.class)) {
             this.discard();
             return;
         }
-        if (nbt.contains(ITEM_PATH_KEY, NbtElement.STRING_TYPE)) {
-            this.itemPath = nbt.getString(ITEM_PATH_KEY);
-            setItemFromPath(this.itemPath);
-        }
-        if (nbt.contains(BEHAVIOR_KEY, NbtElement.STRING_TYPE)) {
+        NoitaProjectilePayload payload;
+        if (nbt.contains(FROZEN_PAYLOAD_KEY, NbtElement.COMPOUND_TYPE)) {
+            payload = NoitaProjectilePayload.tryFromNbt(nbt.getCompound(FROZEN_PAYLOAD_KEY)).orElse(null);
+            if (payload == null) {
+                // Invalid data is inert/safely removed, never a reason to fire
+                // a partially decoded trigger tree during entity load.
+                this.discard();
+                return;
+            }
+        } else {
+            if (currentSchema) {
+                // A v3 entity without its full frozen tree must not regain a
+                // fresh runtime budget or fall back to mutable projection data.
+                this.discard();
+                return;
+            }
             try {
-                this.behavior = NoitaProjectileBehavior.valueOf(nbt.getString(BEHAVIOR_KEY));
-            } catch (IllegalArgumentException ignored) {
-                this.behavior = NoitaProjectileBehavior.BOLT;
+                applyLegacyProjection(nbt);
+                NoitaSpellTriggerMode legacyMode = nbt.contains(TRIGGER_MODE_KEY, NbtElement.STRING_TYPE)
+                    ? NoitaSpellTriggerMode.fromPersisted(nbt.getString(TRIGGER_MODE_KEY)) : NoitaSpellTriggerMode.NONE;
+                List<NoitaProjectilePayload> legacyPayloads = NoitaProjectilePayload.tryFromNbtList(
+                    nbt.getList(TRIGGER_PAYLOADS_KEY, NbtElement.COMPOUND_TYPE)
+                ).orElse(null);
+                if (legacyPayloads == null) {
+                    this.discard();
+                    return;
+                }
+                payload = new NoitaProjectilePayload(this.itemPath, this.behavior, this.damage, this.criticalChancePercent,
+                    this.maxAge, this.trailLightStacks, this.explosionRadius, (float) this.getVelocity().length(), 0.0f,
+                    this.gravity, this.drag, this.bounceDamping, this.renderScale, this.knockbackForce, this.friendlyFire,
+                    this.piercing, 1, 0.0f, legacyMode, nbt.getInt(TRIGGER_DELAY_TICKS_KEY), this.bounceCount,
+                    this.modifierEffects, legacyPayloads);
+            } catch (IllegalArgumentException invalidLegacyPayload) {
+                this.discard();
+                return;
             }
         }
-        if (nbt.contains(DAMAGE_KEY, NbtElement.NUMBER_TYPE)) {
-            this.damage = Math.max(0.0f, nbt.getFloat(DAMAGE_KEY));
+        if (currentSchema && !nbt.contains(TRIGGER_RUNTIME_STATE_KEY, NbtElement.COMPOUND_TYPE)) {
+            this.discard();
+            return;
         }
-        if (nbt.contains(CRITICAL_CHANCE_PERCENT_KEY, NbtElement.NUMBER_TYPE)) {
-            this.criticalChancePercent = Math.max(0.0f, nbt.getFloat(CRITICAL_CHANCE_PERCENT_KEY));
+        TriggerRuntimeState runtimeState = nbt.contains(TRIGGER_RUNTIME_STATE_KEY, NbtElement.COMPOUND_TYPE)
+            ? (currentSchema
+                ? TriggerRuntimeStateNbtCodec.tryFromCurrentNbt(nbt.getCompound(TRIGGER_RUNTIME_STATE_KEY), payload.runtimeBudget())
+                : TriggerRuntimeStateNbtCodec.tryFromNbt(nbt.getCompound(TRIGGER_RUNTIME_STATE_KEY), payload.runtimeBudget()))
+                .orElse(null)
+            : TriggerRuntimeState.fresh(payload.runtimeBudget());
+        if (runtimeState == null) {
+            this.discard();
+            return;
         }
-        if (nbt.contains(MAX_AGE_KEY, NbtElement.NUMBER_TYPE)) {
-            this.maxAge = Math.max(1, nbt.getInt(MAX_AGE_KEY));
+        if (nbt.getBoolean("G03LegacyTriggerReleased") || nbt.getBoolean(TRIGGER_PAYLOAD_RELEASED_KEY)) {
+            // v2 only had one flag, so continuation cannot be reconstructed
+            // without risking duplicate release after a world reload.
+            runtimeState = runtimeState.markInert();
         }
-        if (nbt.contains(TRAIL_LIGHT_STACKS_KEY, NbtElement.NUMBER_TYPE)) {
-            this.trailLightStacks = Math.max(0, nbt.getInt(TRAIL_LIGHT_STACKS_KEY));
-        }
-        if (nbt.contains(EXPLOSION_RADIUS_KEY, NbtElement.NUMBER_TYPE)) {
-            this.explosionRadius = Math.max(0.0f, nbt.getFloat(EXPLOSION_RADIUS_KEY));
-        }
-        if (nbt.contains(GRAVITY_KEY, NbtElement.NUMBER_TYPE)) {
-            this.gravity = nbt.getFloat(GRAVITY_KEY);
-            this.setNoGravity(false);
-        }
-        if (nbt.contains(DRAG_KEY, NbtElement.NUMBER_TYPE)) {
-            this.drag = Math.max(0.0f, nbt.getFloat(DRAG_KEY));
-        }
-        if (nbt.contains(BOUNCE_DAMPING_KEY, NbtElement.NUMBER_TYPE)) {
-            this.bounceDamping = Math.max(0.0f, nbt.getFloat(BOUNCE_DAMPING_KEY));
-        }
-        if (nbt.contains(RENDER_SCALE_KEY, NbtElement.NUMBER_TYPE)) {
-            this.renderScale = Math.max(0.1f, nbt.getFloat(RENDER_SCALE_KEY));
-        }
-        if (nbt.contains(KNOCKBACK_FORCE_KEY, NbtElement.NUMBER_TYPE)) {
-            this.knockbackForce = nbt.getFloat(KNOCKBACK_FORCE_KEY);
-        }
-        if (nbt.contains(FRIENDLY_FIRE_KEY, NbtElement.BYTE_TYPE)) {
-            this.friendlyFire = nbt.getBoolean(FRIENDLY_FIRE_KEY);
-        }
-        if (nbt.contains(PIERCING_KEY, NbtElement.BYTE_TYPE)) {
-            this.piercing = nbt.getBoolean(PIERCING_KEY);
-        }
-        if (nbt.contains(BOUNCE_COUNT_KEY, NbtElement.NUMBER_TYPE)) {
-            this.bounceCount = Math.max(0, nbt.getInt(BOUNCE_COUNT_KEY));
-        }
-        this.modifierEffects = NoitaProjectilePayload.fromEffectNbtList(nbt.getList(MODIFIER_EFFECTS_KEY, NbtElement.STRING_TYPE));
-        this.setInvisible(hasModifierEffect(NoitaModifierEffect.COLOUR_INVIS));
-        if (nbt.contains(TRIGGER_MODE_KEY, NbtElement.STRING_TYPE)) {
-            try {
-                this.triggerMode = NoitaSpellTriggerMode.valueOf(nbt.getString(TRIGGER_MODE_KEY));
-            } catch (IllegalArgumentException ignored) {
-                this.triggerMode = NoitaSpellTriggerMode.NONE;
-            }
-        }
-        if (nbt.contains(TRIGGER_DELAY_TICKS_KEY, NbtElement.NUMBER_TYPE)) {
-            this.triggerDelayTicks = Math.max(0, nbt.getInt(TRIGGER_DELAY_TICKS_KEY));
-        }
-        if (nbt.contains(TRIGGER_PAYLOAD_RELEASED_KEY, NbtElement.BYTE_TYPE)) {
-            this.triggerPayloadReleased = nbt.getBoolean(TRIGGER_PAYLOAD_RELEASED_KEY);
-        }
-        this.triggerPayloads = NoitaProjectilePayload.fromNbtList(nbt.getList(TRIGGER_PAYLOADS_KEY, NbtElement.COMPOUND_TYPE));
+        configureFrozenPayload(payload, runtimeState);
     }
 
     public static void spawnPayloadProjectile(World world, LivingEntity owner, Vec3d position, Vec3d direction, NoitaProjectilePayload payload) {
+        spawnPayloadProjectile(world, owner, position, direction, payload,
+            payload.runtimeBudget().partition(payload.projectileCount()), 0);
+    }
+
+    public static void spawnPayloadProjectile(
+        World world, LivingEntity owner, Vec3d position, Vec3d direction, NoitaProjectilePayload payload,
+        List<TriggerRuntimeBudget> childBudgets
+    ) {
+        spawnPayloadProjectile(world, owner, position, direction, payload, childBudgets, 0);
+    }
+
+    public static void spawnPayloadProjectile(
+        World world, LivingEntity owner, Vec3d position, Vec3d direction, NoitaProjectilePayload payload,
+        List<TriggerRuntimeBudget> childBudgets, int releaseSequence
+    ) {
+        if (childBudgets.size() != payload.projectileCount()) {
+            throw new IllegalArgumentException("child runtime budgets must match the frozen projectile count");
+        }
         Vec3d safeDirection = direction.lengthSquared() > 1.0E-6 ? direction.normalize() : Vec3d.ZERO;
         for (int i = 0; i < payload.projectileCount(); i++) {
             Vec3d shotDirection = applyBurstSpread(safeDirection, i, payload.projectileCount(), payload.burstSpreadDegrees());
+            NoitaProjectilePayload childPayload = payload.withRuntimeBudgetAndInstance(childBudgets.get(i), releaseSequence, i);
             if (payload.behavior().usesBombEntity()) {
-                BombEntity bomb = new BombEntity(world, owner, payload);
+                BombEntity bomb = new BombEntity(world, owner, childPayload);
                 bomb.setPosition(position);
                 bomb.setVelocity(shotDirection.multiply(payload.speed()));
                 world.spawnEntity(bomb);
             } else {
-                SparkBoltProjectileEntity projectile = new SparkBoltProjectileEntity(world, owner, payload);
+                SparkBoltProjectileEntity projectile = new SparkBoltProjectileEntity(world, owner, childPayload);
                 projectile.setPosition(position);
                 projectile.setVelocity(shotDirection.x, shotDirection.y, shotDirection.z, payload.speed(), payload.divergence());
                 world.spawnEntity(projectile);
@@ -458,18 +506,156 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         return Math.max(0.0f, rolledDamage * CRITICAL_DAMAGE_MULTIPLIER);
     }
 
-    private void releaseTriggerPayload() {
-        if (this.triggerPayloadReleased || this.triggerPayloads.isEmpty()) {
+    private void releaseTriggerPayload(TriggerEvent event) {
+        ReleaseDecision decision = this.triggerPayloadController.accept(event);
+        if (!decision.shouldRelease()) {
+            Entity owner = this.getOwner();
+            TriggerRuntimeDiagnostics.reportBudgetExhaustion(this.getWorld(), owner, currentFrozenPayload().executionIdentity(),
+                this.triggerPlan.mode(), this.triggerPayloadController.state(), decision.budgetExhaustion());
             return;
         }
-        this.triggerPayloadReleased = true;
-        Vec3d direction = getPayloadDirection();
         Entity owner = this.getOwner();
         LivingEntity livingOwner = owner instanceof LivingEntity living ? living : null;
-        World world = this.getWorld();
-        for (NoitaProjectilePayload payload : this.triggerPayloads) {
-            spawnPayloadProjectile(world, livingOwner, this.getPos(), direction, payload);
+        TriggerPayloadSpawner.spawn(this.getWorld(), livingOwner, this.getPos(), getPayloadDirection(), decision);
+    }
+
+    private void releaseForTermination(ProjectileTerminationCause cause) {
+        if (!this.getWorld().isClient) {
+            releaseTriggerPayload(TriggerEvent.terminated(cause));
         }
+    }
+
+    private void discardAfterTermination(ProjectileTerminationCause cause) {
+        releaseForTermination(cause);
+        this.discard();
+    }
+
+    @Override
+    public void remove(Entity.RemovalReason reason) {
+        if (reason == Entity.RemovalReason.KILLED && !this.getWorld().isClient && !this.isRemoved()) {
+            // Vanilla /kill and effects that use Entity.kill() bypass the
+            // projectile collision callbacks, but are real gameplay deaths.
+            releaseForTermination(ProjectileTerminationCause.KILLED);
+        }
+        super.remove(reason);
+    }
+
+    private void configureFrozenPayload(NoitaProjectilePayload payload, TriggerRuntimeState runtimeState) {
+        payload = bindLegacyRuntimeIdentity(payload);
+        this.frozenPayload = payload;
+        applyFrozenPayloadMechanics(payload);
+        this.triggerPlan = payload.triggerPlan();
+        this.triggerPayloadController = new TriggerPayloadController(this.triggerPlan, runtimeState);
+    }
+
+    /** Legacy dynamic spawns acquire one server identity before they can be persisted as v3. */
+    private NoitaProjectilePayload bindLegacyRuntimeIdentity(NoitaProjectilePayload payload) {
+        if (payload.executionIdentity().isBound() || this.getWorld().isClient) {
+            return payload;
+        }
+        return payload.withTreeIdentity(UUID.randomUUID(), 0L, LEGACY_RUNTIME_CATALOG_HASH);
+    }
+
+    /** v3 keeps top-level fields only as diagnostics; frozen payload mechanics are authoritative after reload. */
+    private void applyFrozenPayloadMechanics(NoitaProjectilePayload payload) {
+        this.itemPath = payload.itemPath();
+        this.behavior = payload.behavior();
+        this.damage = payload.damage();
+        this.criticalChancePercent = payload.criticalChancePercent();
+        this.trailLightStacks = payload.trailLightStacks();
+        this.modifierEffects = payload.modifierEffects();
+        this.explosionRadius = hasModifierEffect(NoitaModifierEffect.REMOVE_EXPLOSION) ? 0.0f : payload.explosionRadius();
+        this.gravity = payload.gravity();
+        this.drag = payload.drag();
+        this.bounceDamping = payload.bounceDamping();
+        this.renderScale = payload.renderScale();
+        this.knockbackForce = payload.knockbackForce();
+        this.friendlyFire = payload.friendlyFire();
+        this.piercing = payload.piercing() || hasModifierEffect(NoitaModifierEffect.PIERCING_SHOT)
+            || this.behavior.isBeamLike() || itemPathPiercesEntities(this.itemPath);
+        this.bounceCount = payload.bounceCount();
+        this.maxAge = hasModifierEffect(NoitaModifierEffect.NOLLA) ? 1 : payload.lifetimeTicks();
+        this.setNoGravity(false);
+        this.setInvisible(hasModifierEffect(NoitaModifierEffect.COLOUR_INVIS));
+        setItemFromPath(this.itemPath);
+    }
+
+    private void applyLegacyProjection(NbtCompound nbt) {
+        if (nbt.contains(ITEM_PATH_KEY, NbtElement.STRING_TYPE)) {
+            this.itemPath = nbt.getString(ITEM_PATH_KEY);
+        }
+        if (nbt.contains(BEHAVIOR_KEY, NbtElement.STRING_TYPE)) {
+            this.behavior = NoitaProjectileBehavior.valueOf(nbt.getString(BEHAVIOR_KEY));
+        }
+        if (nbt.contains(DAMAGE_KEY, NbtElement.NUMBER_TYPE)) {
+            this.damage = nbt.getFloat(DAMAGE_KEY);
+        }
+        if (nbt.contains(CRITICAL_CHANCE_PERCENT_KEY, NbtElement.NUMBER_TYPE)) {
+            this.criticalChancePercent = nbt.getFloat(CRITICAL_CHANCE_PERCENT_KEY);
+        }
+        if (nbt.contains(MAX_AGE_KEY, NbtElement.NUMBER_TYPE)) {
+            this.maxAge = Math.max(1, nbt.getInt(MAX_AGE_KEY));
+        }
+        if (nbt.contains(TRAIL_LIGHT_STACKS_KEY, NbtElement.NUMBER_TYPE)) {
+            this.trailLightStacks = Math.max(0, nbt.getInt(TRAIL_LIGHT_STACKS_KEY));
+        }
+        if (nbt.contains(EXPLOSION_RADIUS_KEY, NbtElement.NUMBER_TYPE)) {
+            this.explosionRadius = nbt.getFloat(EXPLOSION_RADIUS_KEY);
+        }
+        if (nbt.contains(GRAVITY_KEY, NbtElement.NUMBER_TYPE)) {
+            this.gravity = nbt.getFloat(GRAVITY_KEY);
+        }
+        if (nbt.contains(DRAG_KEY, NbtElement.NUMBER_TYPE)) {
+            this.drag = nbt.getFloat(DRAG_KEY);
+        }
+        if (nbt.contains(BOUNCE_DAMPING_KEY, NbtElement.NUMBER_TYPE)) {
+            this.bounceDamping = nbt.getFloat(BOUNCE_DAMPING_KEY);
+        }
+        if (nbt.contains(RENDER_SCALE_KEY, NbtElement.NUMBER_TYPE)) {
+            this.renderScale = nbt.getFloat(RENDER_SCALE_KEY);
+        }
+        if (nbt.contains(KNOCKBACK_FORCE_KEY, NbtElement.NUMBER_TYPE)) {
+            this.knockbackForce = nbt.getFloat(KNOCKBACK_FORCE_KEY);
+        }
+        this.friendlyFire = nbt.getBoolean(FRIENDLY_FIRE_KEY);
+        this.piercing = nbt.getBoolean(PIERCING_KEY);
+        if (nbt.contains(BOUNCE_COUNT_KEY, NbtElement.NUMBER_TYPE)) {
+            this.bounceCount = Math.max(0, nbt.getInt(BOUNCE_COUNT_KEY));
+        }
+        this.modifierEffects = NoitaProjectilePayload.fromEffectNbtList(
+            nbt.getList(MODIFIER_EFFECTS_KEY, NbtElement.STRING_TYPE)
+        );
+    }
+
+    private NoitaProjectilePayload currentFrozenPayload() {
+        if (this.frozenPayload != null) {
+            return this.frozenPayload;
+        }
+        return new NoitaProjectilePayload(this.itemPath, this.behavior, this.damage, this.criticalChancePercent,
+            this.maxAge, this.trailLightStacks, this.explosionRadius, (float) this.getVelocity().length(), 0.0f,
+            this.gravity, this.drag, this.bounceDamping, this.renderScale, this.knockbackForce, this.friendlyFire,
+            this.piercing, 1, 0.0f, this.triggerPlan.mode(), this.triggerPlan.timerDelayTicks(), this.bounceCount,
+            this.modifierEffects, this.triggerPlan.payloads().stream().flatMap(payload -> payload.projectiles().stream()).toList());
+    }
+
+    private boolean isValidTriggerCollision(HitResult hitResult) {
+        if (hitResult instanceof EntityHitResult entityHit) {
+            if (ignoresEntityCollision()) {
+                return false;
+            }
+            Entity owner = this.getOwner();
+            return this.friendlyFire || owner == null || entityHit.getEntity() != owner;
+        }
+        return hitResult instanceof BlockHitResult;
+    }
+
+    private CollisionKey collisionKey(HitResult hitResult) {
+        long tick = this.getWorld().getTime();
+        String target = hitResult instanceof EntityHitResult entityHit
+            ? "entity:" + entityHit.getEntity().getUuidAsString()
+            : "block:" + ((BlockHitResult) hitResult).getBlockPos().asLong();
+        String face = hitResult instanceof BlockHitResult blockHit ? blockHit.getSide().name() : "ENTITY";
+        return new CollisionKey(tick, target, face, this.triggerPlan.nodePath());
     }
 
     private Vec3d getPayloadDirection() {
@@ -688,7 +874,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (this.behavior == NoitaProjectileBehavior.SUMMON && !this.summonReleased && this.age > 2) {
             releaseSummon(world);
             this.summonReleased = true;
-            this.discard();
+            discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
             return;
         }
         if (this.behavior.isBeamLike()) {
@@ -729,7 +915,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (path.equals("bomb_detonator")) {
             if (this.age <= 2) {
                 detonateNearbyExplosives();
-                this.discard();
+                discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
             }
             return;
         }
@@ -803,7 +989,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             damageLivingInRadius(radius + 1.0, 4.0f, true);
         }
         this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
-        this.discard();
+        discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
     }
 
     private void applyStaticBarrier(String path) {
@@ -882,11 +1068,13 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
                 continue;
             }
             if (path.equals("projectile_transmutation_field")) {
-                entity.discard();
+                // This is a gameplay destruction effect, not an unload or
+                // corrupt-data cleanup, so Expiration payloads must see KILLED.
+                entity.kill();
                 spawnRadialProjectiles("spark_bolt", NoitaProjectileBehavior.BOLT, 1, Math.max(1.0f, this.damage + 1.0f), 25, 0.55f, 0.0f, 0.0f);
             } else if (path.equals("projectile_thunder_field")) {
                 strikeLightning(entity.getPos(), true);
-                entity.discard();
+                entity.kill();
             } else if (path.equals("projectile_gravity_field")) {
                 pullNearbyEntitiesTo(this.getPos(), radius, 0.34, this);
             }
@@ -1147,7 +1335,7 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
         if (hasModifierEffect(NoitaModifierEffect.FIZZLE)) {
             this.setVelocity(this.getVelocity().multiply(0.94));
             if (this.age > Math.max(4, this.maxAge / 3)) {
-                this.discard();
+                discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
             }
         }
         if (hasModifierEffect(NoitaModifierEffect.AREA_DAMAGE) && this.age % SPELL_EFFECT_INTERVAL_TICKS == 0) {
@@ -1637,7 +1825,6 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
             hatchSummonedEgg();
         } else if (path.equals("summon_hollow_egg")) {
             burstHollowEgg();
-            releaseTriggerPayload();
         } else if (path.equals("expanding_orb")) {
             explodeNoitaProjectile(1.8f, false);
         }
@@ -1914,10 +2101,9 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
                 hatchSummonedEgg();
             } else {
                 burstHollowEgg();
-                releaseTriggerPayload();
             }
             this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
-            this.discard();
+            discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
         }
     }
 
@@ -2596,11 +2782,8 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
 
     private void explodeNoitaProjectile(float radius, boolean fire) {
         this.getWorld().createExplosion(this, this.getX(), this.getY(), this.getZ(), radius, fire, World.ExplosionSourceType.TNT);
-        if (this.triggerMode == NoitaSpellTriggerMode.HIT || this.triggerMode == NoitaSpellTriggerMode.DEATH) {
-            releaseTriggerPayload();
-        }
         this.getWorld().sendEntityStatus(this, HIT_FLASH_STATUS);
-        this.discard();
+        discardAfterTermination(ProjectileTerminationCause.TERMINAL_COLLISION);
     }
 
     private void detonateNearbyExplosives() {
@@ -2869,10 +3052,19 @@ public class SparkBoltProjectileEntity extends ThrownItemEntity {
     }
 
     private void setItemFromPath(String path) {
+        if (!NoitaProjectilePayload.isValidItemPath(path)) {
+            // Constructors only use catalog-owned paths, but a corrupt entity
+            // must never reach Identifier construction with ':' or whitespace.
+            this.setItem(new ItemStack(ModItems.LIGHT_BULLET));
+            return;
+        }
         this.setItem(new ItemStack(getVisualItem(path)));
     }
 
     private static Item getVisualItem(String path) {
+        if (!NoitaProjectilePayload.isValidItemPath(path)) {
+            return ModItems.LIGHT_BULLET;
+        }
         if ("megalaser_beam".equals(path)) {
             path = "megalaser";
         }

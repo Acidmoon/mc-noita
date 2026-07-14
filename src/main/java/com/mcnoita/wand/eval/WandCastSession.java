@@ -20,6 +20,7 @@ import com.mcnoita.spell.plan.BudgetUsage;
 import com.mcnoita.spell.plan.CastBudget;
 import com.mcnoita.spell.plan.CastDiagnostic;
 import com.mcnoita.spell.plan.EffectPlan;
+import com.mcnoita.spell.plan.PayloadPlan;
 import com.mcnoita.spell.plan.ProjectileDefinition;
 import com.mcnoita.spell.plan.ProjectilePlan;
 import com.mcnoita.spell.plan.RecoilPlan;
@@ -27,7 +28,9 @@ import com.mcnoita.spell.plan.ResolvedCast;
 import com.mcnoita.spell.plan.ShotModifier;
 import com.mcnoita.spell.plan.ShotState;
 import com.mcnoita.spell.plan.SoundPlan;
+import com.mcnoita.spell.plan.TriggerPlan;
 import com.mcnoita.spell.plan.TriggerMode;
+import com.mcnoita.spell.plan.TriggerReleasePolicy;
 import com.mcnoita.wand.model.CardRef;
 import com.mcnoita.wand.model.DeckState;
 import com.mcnoita.wand.model.NoitaDuration;
@@ -66,6 +69,7 @@ public final class WandCastSession {
     private final TimingAccumulator rechargeTiming;
 
     private List<MutableProjectile> projectileSink = rootProjectiles;
+    private String projectilePathPrefix = "root";
     private MutableProjectile lastProjectile;
     private ShotState shotState = ShotState.EMPTY;
     private double mana;
@@ -78,9 +82,12 @@ public final class WandCastSession {
     private boolean inPayload;
     private int recursiveCallDepth;
     private int payloadDepth;
+    private int maxPayloadDepth;
     private int actionSteps;
     private int projectileNodes;
     private int payloadNodes;
+    private int rootSpawnedEntities;
+    private int reservedSpawnedEntities;
     private String currentSpellId = "";
 
     WandCastSession(
@@ -126,6 +133,8 @@ public final class WandCastSession {
             if (shouldReload) {
                 reloadDeck();
             }
+            List<ProjectilePlan> frozenProjectiles = freeze(rootProjectiles);
+            reserveRuntimeTree(frozenProjectiles);
             NoitaDuration finalCastDelay = castDelayTiming.duration();
             NoitaDuration finalRecharge = shouldReload ? rechargeTiming.duration() : NoitaDuration.ZERO;
             WandState next = new WandState(
@@ -137,7 +146,7 @@ public final class WandCastSession {
                 originalState.revision() + 1,
                 originalState.stateHash()
             );
-            return result(ResolvedCast.Status.ACCEPTED, next, new EffectPlan(freeze(rootProjectiles), sounds, recoils));
+            return result(ResolvedCast.Status.ACCEPTED, next, new EffectPlan(frozenProjectiles, sounds, recoils));
         } catch (BudgetExceeded exhausted) {
             diagnostics.add(exhausted.diagnostic);
             return result(ResolvedCast.Status.REJECTED, originalState, EffectPlan.empty());
@@ -285,8 +294,7 @@ public final class WandCastSession {
 
     private void executeAction(SpellAction action, SpellDefinition definition, CardRef origin, ExecutionScope scope) {
         if (action instanceof ModifyShotAction modify) {
-            shotState = shotState.applyModifier(modify.modifier());
-            applyModifierTiming(modify.modifier());
+            applyModifier(modify.modifier());
         } else if (action instanceof DrawAction drawAction) {
             // Fixed gun.lua behavior: a permanently attached modifier's single
             // Draw does not add a second card to a one-spell cast. Higher counts
@@ -313,6 +321,12 @@ public final class WandCastSession {
         }
     }
 
+    private void applyModifier(ShotModifier modifier) {
+        requireModifierEffectCapacity((long) shotState.effects().size() + modifier.effects().size());
+        shotState = shotState.applyModifier(modifier);
+        applyModifierTiming(modifier);
+    }
+
     private void applyModifierTiming(ShotModifier modifier) {
         if (!inPayload) {
             castDelayTiming.apply(TimingOperation.ADD, modifier.castDelayFrames());
@@ -328,7 +342,17 @@ public final class WandCastSession {
     }
 
     private void addProjectile(ProjectileDefinition source) {
+        if (inPayload && projectileSink.size() >= PayloadPlan.MAX_PROJECTILES_PER_SHOT) {
+            throw budgetExceeded("PAYLOAD_CHILDREN_BUDGET", projectileSink.size() + 1,
+                PayloadPlan.MAX_PROJECTILES_PER_SHOT);
+        }
         reserveProjectiles(source.projectileCount());
+        if (!inPayload) {
+            rootSpawnedEntities += source.projectileCount();
+            if (rootSpawnedEntities > budget.spawnedEntities()) {
+                throw budgetExceeded("SPAWNED_ENTITY_BUDGET", rootSpawnedEntities, budget.spawnedEntities());
+            }
+        }
         // A projectile action runs once even if its plan expands to many entities.
         if (!inPayload) {
             castDelayTiming.apply(TimingOperation.ADD, source.castDelayFrames());
@@ -337,10 +361,12 @@ public final class WandCastSession {
         rechargeTiming.apply(TimingOperation.ADD, source.rechargeFrames());
         double divergence = wand.spreadDegrees() + source.spreadDegrees() + shotState.spreadDegrees();
         double spreadOffset = divergence == 0.0 ? 0.0 : (rng.nextDouble("spread") - 0.5) * divergence;
+        requireModifierEffectCapacity((long) source.effects().size() + shotState.effects().size());
         List<String> effects = new ArrayList<>(source.effects());
         effects.addAll(shotState.effects());
         MutableProjectile projectile = new MutableProjectile(
-            source.itemPath(), source.behavior(), Math.max(0.0, source.damage() + shotState.damage()),
+            projectilePathPrefix + "/" + projectileSink.size(), source.itemPath(), source.behavior(),
+            Math.max(0.0, source.damage() + shotState.damage()),
             source.criticalChancePercent() + shotState.criticalChancePercent(),
             NoitaDuration.frames(Math.max(1.0, source.lifetime().frames() + shotState.lifetimeFrames())),
             source.trailLightStacks() + shotState.trailLightStacks(), Math.max(0.0, source.explosionRadius() + shotState.explosionRadius()),
@@ -348,7 +374,7 @@ public final class WandCastSession {
             source.gravity() + shotState.gravity(), source.drag(), source.bounceDamping(), source.renderScale(),
             source.knockbackForce() + shotState.knockbackForce(), source.friendlyFire() || shotState.friendlyFire(),
             source.piercing() || shotState.piercing(), source.projectileCount(), source.burstSpreadDegrees(),
-            TriggerMode.NONE, source.triggerDelay(), shotState.bounceCount(), effects
+            source.triggerDelay(), shotState.bounceCount(), effects
         );
         projectileSink.add(projectile);
         lastProjectile = projectile;
@@ -363,29 +389,46 @@ public final class WandCastSession {
             diagnostics.add(diagnostic("TRIGGER_WITHOUT_PROJECTILE", currentSpellId, 0, 0));
             return;
         }
+        if (lastProjectile.trigger != null) {
+            diagnostics.add(diagnostic("TRIGGER_ALREADY_ATTACHED", currentSpellId, 0, 0));
+            return;
+        }
+
+        int nextPayloadDepth = payloadDepth + 1;
         payloadNodes++;
-        if (payloadNodes > budget.payloadNodes() || payloadDepth >= budget.payloadNodes()) {
-            throw budgetExceeded("PAYLOAD_BUDGET", payloadNodes, budget.payloadNodes());
+        if (payloadNodes > budget.payloadNodes()) {
+            throw budgetExceeded("PAYLOAD_NODE_BUDGET", payloadNodes, budget.payloadNodes());
+        }
+        if (nextPayloadDepth > budget.payloadDepth()) {
+            throw budgetExceeded("PAYLOAD_DEPTH_BUDGET", nextPayloadDepth, budget.payloadDepth());
         }
 
         ShotState previousShot = shotState;
         List<MutableProjectile> previousSink = projectileSink;
         MutableProjectile previousLast = lastProjectile;
         boolean previousInPayload = inPayload;
+        int previousPayloadDepth = payloadDepth;
+        String previousPathPrefix = projectilePathPrefix;
         List<MutableProjectile> payloads = new ArrayList<>();
+        String triggerPath = previousLast.nodePath + "/trigger";
         try {
-            payloadDepth++;
+            payloadDepth = nextPayloadDepth;
+            maxPayloadDepth = Math.max(maxPayloadDepth, payloadDepth);
             inPayload = true;
             shotState = ShotState.EMPTY;
             projectileSink = payloads;
+            projectilePathPrefix = triggerPath;
             lastProjectile = null;
             draw(DrawRequest.payload(trigger.drawCount()));
-            previousLast.triggerMode = trigger.mode();
-            previousLast.payloads.addAll(payloads);
+            previousLast.trigger = new MutableTrigger(
+                triggerPath, trigger.mode(), previousLast.triggerDelay, payloadDepth,
+                TriggerReleasePolicy.forMode(trigger.mode()), payloads
+            );
         } finally {
-            payloadDepth--;
+            payloadDepth = previousPayloadDepth;
             shotState = previousShot;
             projectileSink = previousSink;
+            projectilePathPrefix = previousPathPrefix;
             lastProjectile = previousLast;
             inPayload = previousInPayload;
         }
@@ -574,15 +617,60 @@ public final class WandCastSession {
         }
         return new ResolvedCast(status, nextState, plan, remainingUses, drawOutcomes,
             nextState.castDelayRemaining(), nextState.rechargeRemaining(), rng.rootSeed(), catalog.epoch(), catalog.hash(),
-            new BudgetUsage(actionSteps, projectileNodes, payloadNodes), diagnostics);
+            new BudgetUsage(actionSteps, projectileNodes, payloadNodes, maxPayloadDepth,
+                reservedSpawnedEntities == 0 ? rootSpawnedEntities : reservedSpawnedEntities), diagnostics);
     }
 
     private CastDiagnostic diagnostic(String code, String spellId, int used, int limit) {
-        return new CastDiagnostic(code, spellId, actionPath, used, limit);
+        String nodePath = lastProjectile == null ? projectilePathPrefix : lastProjectile.nodePath;
+        return new CastDiagnostic(code, spellId, actionPath, used, limit, nodePath);
     }
 
     private BudgetExceeded budgetExceeded(String code, int used, int limit) {
         return new BudgetExceeded(diagnostic(code, currentSpellId, used, limit));
+    }
+
+    /**
+     * Modifier effects are stored in every frozen projectile NBT node. Reject
+     * before WandState commit instead of creating a cast that reload decoding
+     * must later discard as malformed.
+     */
+    private void requireModifierEffectCapacity(long effectCount) {
+        if (effectCount > ProjectilePlan.MAX_MODIFIER_EFFECTS) {
+            throw budgetExceeded("MODIFIER_EFFECT_BUDGET", cappedInt(effectCount), ProjectilePlan.MAX_MODIFIER_EFFECTS);
+        }
+    }
+
+    /**
+     * Reserve the static lower bound of the frozen tree before cards, mana and
+     * cooldown become visible. Runtime retains capacity for legal Piercing
+     * repeats, but an accepted first release must never be impossible solely
+     * because roots consumed all entity slots.
+     */
+    private void reserveRuntimeTree(List<ProjectilePlan> projectiles) {
+        long entities = 0L;
+        long releaseEvents = 0L;
+        for (ProjectilePlan projectile : projectiles) {
+            entities = addCapped(entities, projectile.staticEntityFootprint());
+            releaseEvents = addCapped(releaseEvents, projectile.staticReleaseEventFootprint());
+        }
+        int entityLimit = Math.min(budget.spawnedEntities(), CastBudget.DEFAULT_SPAWNED_ENTITIES);
+        if (entities > entityLimit) {
+            throw budgetExceeded("SPAWNED_ENTITY_BUDGET", cappedInt(entities), entityLimit);
+        }
+        if (releaseEvents > CastBudget.DEFAULT_RUNTIME_RELEASE_EVENTS) {
+            throw budgetExceeded("TRIGGER_RELEASE_EVENT_BUDGET", cappedInt(releaseEvents),
+                CastBudget.DEFAULT_RUNTIME_RELEASE_EVENTS);
+        }
+        reservedSpawnedEntities = (int) entities;
+    }
+
+    private static long addCapped(long left, long right) {
+        return right > Long.MAX_VALUE - left ? Long.MAX_VALUE : left + right;
+    }
+
+    private static int cappedInt(long value) {
+        return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
     }
 
     private double settledMana() {
@@ -595,12 +683,19 @@ public final class WandCastSession {
     private static List<ProjectilePlan> freeze(List<MutableProjectile> mutableProjectiles) {
         List<ProjectilePlan> plans = new ArrayList<>(mutableProjectiles.size());
         for (MutableProjectile projectile : mutableProjectiles) {
-            plans.add(new ProjectilePlan(projectile.itemPath, projectile.behavior, projectile.damage, projectile.criticalChancePercent,
+            TriggerPlan trigger = null;
+            if (projectile.trigger != null) {
+                MutableTrigger mutableTrigger = projectile.trigger;
+                PayloadPlan payload = new PayloadPlan(mutableTrigger.nodePath, mutableTrigger.payloadDepth, freeze(mutableTrigger.payloads));
+                trigger = new TriggerPlan(mutableTrigger.nodePath, mutableTrigger.mode, mutableTrigger.timerDelay,
+                    mutableTrigger.payloadDepth, mutableTrigger.releasePolicy, payload);
+            }
+            plans.add(new ProjectilePlan(projectile.nodePath, projectile.itemPath, projectile.behavior, projectile.damage,
+                projectile.criticalChancePercent,
                 projectile.lifetime, projectile.trailLightStacks, projectile.explosionRadius, projectile.speed,
                 projectile.spreadOffsetDegrees, projectile.gravity, projectile.drag, projectile.bounceDamping,
                 projectile.renderScale, projectile.knockbackForce, projectile.friendlyFire, projectile.piercing,
-                projectile.projectileCount, projectile.burstSpreadDegrees, projectile.triggerMode, projectile.triggerDelay,
-                projectile.bounceCount, projectile.effects, freeze(projectile.payloads)));
+                projectile.projectileCount, projectile.burstSpreadDegrees, trigger, projectile.bounceCount, projectile.effects));
         }
         return List.copyOf(plans);
     }
@@ -628,6 +723,7 @@ public final class WandCastSession {
     }
 
     private static final class MutableProjectile {
+        private final String nodePath;
         private final String itemPath;
         private final String behavior;
         private final double damage;
@@ -646,19 +742,19 @@ public final class WandCastSession {
         private final boolean piercing;
         private final int projectileCount;
         private final double burstSpreadDegrees;
-        private TriggerMode triggerMode;
         private final NoitaDuration triggerDelay;
         private final int bounceCount;
         private final List<String> effects;
-        private final List<MutableProjectile> payloads = new ArrayList<>();
+        private MutableTrigger trigger;
 
         private MutableProjectile(
-            String itemPath, String behavior, double damage, double criticalChancePercent, NoitaDuration lifetime,
+            String nodePath, String itemPath, String behavior, double damage, double criticalChancePercent, NoitaDuration lifetime,
             int trailLightStacks, double explosionRadius, double speed, double spreadOffsetDegrees, double gravity,
             double drag, double bounceDamping, double renderScale, double knockbackForce, boolean friendlyFire,
-            boolean piercing, int projectileCount, double burstSpreadDegrees, TriggerMode triggerMode,
-            NoitaDuration triggerDelay, int bounceCount, List<String> effects
+            boolean piercing, int projectileCount, double burstSpreadDegrees, NoitaDuration triggerDelay,
+            int bounceCount, List<String> effects
         ) {
+            this.nodePath = nodePath;
             this.itemPath = itemPath;
             this.behavior = behavior;
             this.damage = damage;
@@ -677,10 +773,34 @@ public final class WandCastSession {
             this.piercing = piercing;
             this.projectileCount = projectileCount;
             this.burstSpreadDegrees = burstSpreadDegrees;
-            this.triggerMode = triggerMode;
             this.triggerDelay = triggerDelay;
             this.bounceCount = bounceCount;
             this.effects = List.copyOf(effects);
+        }
+    }
+
+    private static final class MutableTrigger {
+        private final String nodePath;
+        private final TriggerMode mode;
+        private final NoitaDuration timerDelay;
+        private final int payloadDepth;
+        private final TriggerReleasePolicy releasePolicy;
+        private final List<MutableProjectile> payloads;
+
+        private MutableTrigger(
+            String nodePath,
+            TriggerMode mode,
+            NoitaDuration timerDelay,
+            int payloadDepth,
+            TriggerReleasePolicy releasePolicy,
+            List<MutableProjectile> payloads
+        ) {
+            this.nodePath = nodePath;
+            this.mode = mode;
+            this.timerDelay = timerDelay;
+            this.payloadDepth = payloadDepth;
+            this.releasePolicy = releasePolicy;
+            this.payloads = payloads;
         }
     }
 

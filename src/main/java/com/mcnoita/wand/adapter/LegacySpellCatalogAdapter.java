@@ -164,7 +164,7 @@ public final class LegacySpellCatalogAdapter {
         return switch (mode) {
             case HIT -> TriggerMode.HIT;
             case TIMER -> TriggerMode.TIMER;
-            case DEATH -> TriggerMode.DEATH;
+            case EXPIRATION, DEATH -> TriggerMode.EXPIRATION;
             case NONE -> TriggerMode.NONE;
         };
     }

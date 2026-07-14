@@ -44,7 +44,7 @@ class NoitaNbtMigrationTest {
         g01.put("Discarded", discarded);
 
         assertTrue(NoitaNbtSchema.migrateToCurrent(g01, NoitaNbtSchema.Kind.CAST_STATE));
-        assertEquals(2, g01.getInt(NoitaNbtSchema.VERSION_KEY));
+        assertEquals(3, g01.getInt(NoitaNbtSchema.VERSION_KEY));
         assertFalse(g01.getBoolean("G02ReloadPrepared"));
         assertEquals(2, g01.getList("Discarded", net.minecraft.nbt.NbtElement.INT_TYPE).size());
     }
@@ -72,10 +72,10 @@ class NoitaNbtMigrationTest {
 
     @Test
     void deeplyNestedPayloadIsRejectedBeforeRecursiveDecode() {
-        NbtCompound root = payload().toNbt();
+        NbtCompound root = legacyTriggerPayload();
         NbtCompound current = root;
         for (int i = 0; i <= NoitaNbtLimits.MAX_PAYLOAD_DEPTH; i++) {
-            NbtCompound child = payload().toNbt();
+            NbtCompound child = legacyTriggerPayload();
             NbtList children = new NbtList();
             children.add(child);
             current.put("Payloads", children);
@@ -87,10 +87,10 @@ class NoitaNbtMigrationTest {
 
     @Test
     void oversizedPayloadListIsRejected() {
-        NbtCompound root = payload().toNbt();
+        NbtCompound root = legacyTriggerPayload();
         NbtList children = new NbtList();
         for (int i = 0; i < NoitaNbtLimits.MAX_PAYLOAD_CHILDREN + 1; i++) {
-            children.add(payload().toNbt());
+            children.add(legacyTriggerPayload());
         }
         root.put("Payloads", children);
 
@@ -115,5 +115,14 @@ class NoitaNbtMigrationTest {
             1.0f, 0.0f, 0.0f, 0.99f, 0.65f, 1.0f, 0.0f, false, false,
             1, 0.0f, NoitaSpellTriggerMode.NONE, 0, 0, List.of(), List.of()
         );
+    }
+
+    private static NbtCompound legacyTriggerPayload() {
+        NbtCompound nbt = payload().toNbt();
+        nbt.putInt(NoitaNbtSchema.VERSION_KEY, 2);
+        nbt.remove("TriggerPlan");
+        nbt.putString("TriggerMode", "HIT");
+        nbt.putInt("TriggerDelayTicks", 0);
+        return nbt;
     }
 }

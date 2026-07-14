@@ -23,11 +23,14 @@ public final class NoitaNbtSafety {
         if (!nbt.contains(key, NbtElement.NUMBER_TYPE)) {
             return fallback;
         }
-        float value = nbt.getFloat(key);
-        if (!Float.isFinite(value)) {
+        // getFloat() silently converts a finite NbtDouble outside float range
+        // into Infinity. Bound as a double first so persisted values cannot
+        // bypass the finite check on their way into a world executor.
+        double value = nbt.getDouble(key);
+        if (!Double.isFinite(value)) {
             return fallback;
         }
-        return Math.max(min, Math.min(max, value));
+        return (float) Math.max(min, Math.min(max, value));
     }
 
     public static boolean hasUniqueBoundedSlots(NbtList entries, int capacity) {

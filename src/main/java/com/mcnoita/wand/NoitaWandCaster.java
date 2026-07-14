@@ -51,7 +51,7 @@ public final class NoitaWandCaster {
 
         // State is durable before any entity allocation. Executor failures never roll it back.
         MinecraftWandAdapter.write(wandStack, loaded, resolved.nextState(), now);
-        MinecraftEffectExecutor.execute(player, resolved.effectPlan());
+        MinecraftEffectExecutor.execute(player, resolved);
     }
 
     public static CastHudState getHudState(ServerPlayerEntity player) {

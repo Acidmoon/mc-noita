@@ -172,6 +172,12 @@ tasks.register("verifyG02") {
     dependsOn "checkSpellCatalog", "test", "gameTest", "runGametest", "smokeDedicatedServer", "build"
 }
 
+tasks.register("verifyG03") {
+    group = "verification"
+    description = "Runs G03 Trigger-tree JUnit, Fabric GameTest, dedicated-server smoke, and production build checks."
+    dependsOn "checkSpellCatalog", "test", "gameTest", "runGametest", "smokeDedicatedServer", "build"
+}
+
 tasks.named("gameTest") {
     mustRunAfter "test"
 }
