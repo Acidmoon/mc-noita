@@ -1,9 +1,12 @@
 package com.mcnoita.network;
 
 import com.mcnoita.MCNoita;
+import com.mcnoita.catalog.CatalogSnapshot;
+import com.mcnoita.catalog.SpellCatalogService;
 import com.mcnoita.item.NoitaWandItem;
 import com.mcnoita.player.NoitaHoverManager;
 import com.mcnoita.wand.NoitaWandCaster;
+import com.mcnoita.wand.adapter.MinecraftWandAdapter;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.item.ItemStack;
@@ -40,12 +43,23 @@ public final class ModNetworking {
         }
 
         ItemStack heldStack = player.getMainHandStack();
+        CatalogSnapshot snapshot;
+        try {
+            snapshot = SpellCatalogService.getInstance().current();
+        } catch (IllegalStateException unavailable) {
+            return;
+        }
         if (!(heldStack.getItem() instanceof NoitaWandItem)
             || request.stateHash() != NoitaNetworkProtocol.wandStateHash(heldStack)
+            || request.wandRevision() != MinecraftWandAdapter.stateRevisionReadOnly(heldStack)
+            || request.catalogEpoch() != snapshot.epoch()
+            || !request.catalogHash().equals(snapshot.hash())
             || !NoitaWandCaster.canCast(player)) {
             return;
         }
-        NoitaWandCaster.cast(player);
+        NoitaWandCaster.cast(
+            player, request.sequence(), request.stateHash(), request.wandRevision(), request.catalogEpoch(), request.catalogHash()
+        );
     }
 
     private static void handleHoverInput(ServerPlayerEntity player, HoverInputRequest request) {

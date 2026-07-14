@@ -5,6 +5,7 @@ import com.mcnoita.wand.adapter.MinecraftWandAdapter;
 import com.mcnoita.wand.server.CastIntent;
 import com.mcnoita.wand.server.CastResult;
 import com.mcnoita.wand.server.CastTransaction;
+import com.mcnoita.wand.server.ClientCastBinding;
 import net.minecraft.item.ItemStack;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Hand;
@@ -27,12 +28,23 @@ public final class NoitaWandCaster {
         return cast(player, CastIntent.SERVER_INITIATED_SEQUENCE);
     }
 
-    /** Existing packet fields may supply their sequence without changing the wire format. */
+    /** Direct server callers may supply a sequence without asserting client-observed state. */
     public static CastResult cast(ServerPlayerEntity player, long sequence) {
         if (player == null) {
             return CastResult.rejected(CastResult.Status.VALIDATION_REJECTED, "player is missing", null, null, null);
         }
         return TRANSACTION.cast(player, new CastIntent(Hand.MAIN_HAND, player.getInventory().selectedSlot, sequence));
+    }
+
+    /** V2 C2S path: the transaction revalidates this echoed binding before and after reservation. */
+    public static CastResult cast(
+        ServerPlayerEntity player, long sequence, int stateHash, long wandRevision, long catalogEpoch, String catalogHash
+    ) {
+        if (player == null) {
+            return CastResult.rejected(CastResult.Status.VALIDATION_REJECTED, "player is missing", null, null, null);
+        }
+        ClientCastBinding binding = new ClientCastBinding(stateHash, wandRevision, catalogEpoch, catalogHash);
+        return TRANSACTION.cast(player, CastIntent.clientMainHand(player.getInventory().selectedSlot, sequence, binding));
     }
 
     public static CastHudState getHudState(ServerPlayerEntity player) {

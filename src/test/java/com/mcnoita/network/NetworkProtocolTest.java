@@ -13,9 +13,13 @@ import org.junit.jupiter.api.Test;
 
 @Tag("regression")
 class NetworkProtocolTest {
+    private static final String CATALOG_HASH = "a".repeat(NoitaNetworkProtocol.CATALOG_HASH_LENGTH);
+
     @Test
     void castRequestRoundTripsExactly() {
-        WandCastRequest expected = new WandCastRequest(NoitaNetworkProtocol.VERSION, 7, Hand.MAIN_HAND, 3, 42);
+        WandCastRequest expected = new WandCastRequest(
+            NoitaNetworkProtocol.VERSION, 7, Hand.MAIN_HAND, 3, 42, 19L, 4L, CATALOG_HASH
+        );
         PacketByteBuf buf = PacketByteBufs.create();
         expected.write(buf);
 
@@ -25,10 +29,38 @@ class NetworkProtocolTest {
     @Test
     void castRequestRejectsTrailingBytes() {
         PacketByteBuf buf = PacketByteBufs.create();
-        new WandCastRequest(NoitaNetworkProtocol.VERSION, 1, Hand.MAIN_HAND, 0, 0).write(buf);
+        new WandCastRequest(NoitaNetworkProtocol.VERSION, 1, Hand.MAIN_HAND, 0, 0, 0L, 0L, CATALOG_HASH).write(buf);
         buf.writeByte(1);
 
         assertTrue(WandCastRequest.read(buf).isEmpty());
+    }
+
+    @Test
+    void castRequestRejectsInvalidBindingAndHudSnapshotRoundTripsExactly() {
+        PacketByteBuf malformed = PacketByteBufs.create();
+        malformed.writeVarInt(NoitaNetworkProtocol.VERSION);
+        malformed.writeVarInt(1);
+        malformed.writeByte(Hand.MAIN_HAND.ordinal());
+        malformed.writeVarInt(0);
+        malformed.writeInt(0);
+        malformed.writeVarLong(0L);
+        malformed.writeVarLong(0L);
+        malformed.writeString("not-a-catalog-hash");
+        assertTrue(WandCastRequest.read(malformed).isEmpty());
+
+        WandCastHudSnapshot expected = new WandCastHudSnapshot(
+            NoitaNetworkProtocol.VERSION, 1, 3, 8, 25.0f, 100, 19L, 4L, 42, CATALOG_HASH
+        );
+        PacketByteBuf hud = PacketByteBufs.create();
+        expected.write(hud);
+        assertEquals(expected, WandCastHudSnapshot.read(hud).orElseThrow());
+    }
+
+    @Test
+    void canonicalCatalogHashRejectsWrongLengthAndUppercase() {
+        assertTrue(NoitaNetworkProtocol.isCanonicalCatalogHash(CATALOG_HASH));
+        assertFalse(NoitaNetworkProtocol.isCanonicalCatalogHash("a".repeat(NoitaNetworkProtocol.CATALOG_HASH_LENGTH - 1)));
+        assertFalse(NoitaNetworkProtocol.isCanonicalCatalogHash("A".repeat(NoitaNetworkProtocol.CATALOG_HASH_LENGTH)));
     }
 
     @Test

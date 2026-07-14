@@ -33,6 +33,7 @@ import com.mcnoita.wand.model.NoitaDuration;
 import com.mcnoita.wand.server.CastIntent;
 import com.mcnoita.wand.server.CastResult;
 import com.mcnoita.wand.server.CastTransaction;
+import com.mcnoita.wand.server.ClientCastBinding;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -92,7 +93,8 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         "legacy_runtime_payload_receives_execution_identity",
         "g02_two_round_real_wand_matches_evaluator",
         "g05_transaction_budget_rejection_preserves_wand",
-        "g05_open_editor_rejects_cast"
+        "g05_open_editor_rejects_cast",
+        "g05_stale_client_binding_preserves_wand"
     );
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
@@ -674,6 +676,38 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         context.complete();
     }
 
+    /** V2 client echoes are assertions, so stale revision and catalog data cannot commit a wand. */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 5)
+    public void g05StaleClientBindingPreservesWand(TestContext context) {
+        context.setTime(0);
+        ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
+        player.setStackInHand(Hand.MAIN_HAND, configuredThreeBoltWand());
+        ItemStack wand = player.getMainHandStack();
+        byte[] before = serializedStackNbt(wand);
+        var snapshot = SpellCatalogService.getInstance().current();
+        int stateHash = com.mcnoita.network.NoitaNetworkProtocol.wandStateHash(wand);
+        long revision = MinecraftWandAdapter.stateRevisionReadOnly(wand);
+        AtomicBoolean executionEntered = new AtomicBoolean();
+        CastTransaction transaction = new CastTransaction(
+            new WandCastEvaluator(), SpellCatalogService.getInstance(), new SpellBudgetManager(BudgetLimits.unlimited()),
+            (ignoredPlayer, ignoredPlan, ignoredExecutionId, ignoredReservation) -> executionEntered.set(true)
+        );
+
+        CastResult oldRevision = transaction.cast(player, CastIntent.clientMainHand(player.getInventory().selectedSlot, 43L,
+            new ClientCastBinding(stateHash, revision + 1L, snapshot.epoch(), snapshot.hash())));
+        CastResult oldEpoch = transaction.cast(player, CastIntent.clientMainHand(player.getInventory().selectedSlot, 44L,
+            new ClientCastBinding(stateHash, revision, snapshot.epoch() + 1L, snapshot.hash())));
+
+        context.assertTrue(oldRevision.status() == CastResult.Status.STALE_BINDING,
+            "a stale client revision must be rejected before reservation and commit");
+        context.assertTrue(oldEpoch.status() == CastResult.Status.STALE_BINDING,
+            "a stale client catalog epoch must be rejected before reservation and commit");
+        context.assertTrue(!executionEntered.get(), "stale client bindings must not reach execution");
+        context.assertTrue(Arrays.equals(before, serializedStackNbt(player.getMainHandStack())),
+            "stale client bindings must preserve the complete wand NBT byte-for-byte");
+        context.complete();
+    }
+
     private static void completeFixedFixture(TestContext context) {
         context.setTime(0);
         context.runAtTick(20, () -> {
@@ -892,7 +926,7 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
     @Test
     @Tag("gametest")
     void fixtureCatalogCoversTheG02WorldScenario() {
-        assertEquals(27, SCENARIOS.size());
+        assertEquals(28, SCENARIOS.size());
         assertTrue(SCENARIOS.contains("starter_wand_server_authority"));
         assertTrue(SCENARIOS.contains("trigger_payload_block_hit_release"));
         assertTrue(SCENARIOS.contains("trigger_payload_entity_hit_release"));
@@ -913,5 +947,6 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         assertTrue(SCENARIOS.contains("g02_two_round_real_wand_matches_evaluator"));
         assertTrue(SCENARIOS.contains("g05_transaction_budget_rejection_preserves_wand"));
         assertTrue(SCENARIOS.contains("g05_open_editor_rejects_cast"));
+        assertTrue(SCENARIOS.contains("g05_stale_client_binding_preserves_wand"));
     }
 }

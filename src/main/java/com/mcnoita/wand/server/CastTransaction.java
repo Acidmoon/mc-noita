@@ -4,6 +4,7 @@ import com.mcnoita.MCNoita;
 import com.mcnoita.catalog.CatalogSnapshot;
 import com.mcnoita.catalog.SpellCatalogService;
 import com.mcnoita.item.NoitaWandItem;
+import com.mcnoita.network.NoitaNetworkProtocol;
 import com.mcnoita.spell.exec.MinecraftEffectExecutor;
 import com.mcnoita.spell.plan.ResolvedCast;
 import com.mcnoita.spell.server.budget.BudgetLimits;
@@ -68,17 +69,22 @@ public final class CastTransaction {
             return rejected(CastResult.Status.VALIDATION_REJECTED, "wand is malformed or cooling down", null, null, null);
         }
 
-        long randomSeed = player.getRandom().nextLong();
-        MinecraftWandAdapter.LoadedWand loaded = MinecraftWandAdapter.read(replacement, wandItem, now, randomSeed);
-        if (loaded == null) {
-            return rejected(CastResult.Status.VALIDATION_REJECTED, "wand state could not be decoded", null, null, null);
-        }
-
         CatalogSnapshot snapshot;
         try {
             snapshot = catalogService.current();
         } catch (IllegalStateException unavailable) {
             return rejected(CastResult.Status.VALIDATION_REJECTED, "catalog snapshot is unavailable", null, null, null);
+        }
+        if (!matchesClientBinding(intent, source, snapshot)) {
+            return rejected(CastResult.Status.STALE_BINDING, "client observed an obsolete wand or catalog binding", null, null, null);
+        }
+
+        // Do not advance an entity RNG for a stale client packet. The seed is
+        // sampled only after every pre-evaluation binding assertion succeeds.
+        long randomSeed = player.getRandom().nextLong();
+        MinecraftWandAdapter.LoadedWand loaded = MinecraftWandAdapter.read(replacement, wandItem, now, randomSeed);
+        if (loaded == null) {
+            return rejected(CastResult.Status.VALIDATION_REJECTED, "wand state could not be decoded", null, null, null);
         }
 
         UUID executionId = UUID.randomUUID();
@@ -174,7 +180,8 @@ public final class CastTransaction {
         } catch (IllegalStateException unavailable) {
             return false;
         }
-        return expected.matches(captureBinding(player, intent, source, loaded, current));
+        return matchesClientBinding(intent, source, current)
+            && expected.matches(captureBinding(player, intent, source, loaded, current));
     }
 
     private static boolean isEligiblePlayer(ServerPlayerEntity player) {
@@ -200,6 +207,15 @@ public final class CastTransaction {
         }
         player.getInventory().setStack(intent.slot(), replacement);
         return true;
+    }
+
+    private static boolean matchesClientBinding(CastIntent intent, ItemStack stack, CatalogSnapshot snapshot) {
+        ClientCastBinding expected = intent.clientBinding();
+        return expected == null
+            || (expected.stateHash() == NoitaNetworkProtocol.wandStateHash(stack)
+                && expected.wandRevision() == MinecraftWandAdapter.stateRevisionReadOnly(stack)
+                && expected.catalogEpoch() == snapshot.epoch()
+                && expected.catalogHash().equals(snapshot.hash()));
     }
 
     private static CastBinding captureBinding(

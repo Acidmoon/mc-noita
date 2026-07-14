@@ -1,6 +1,7 @@
 package com.mcnoita.client.network;
 
 import com.mcnoita.item.NoitaWandItem;
+import com.mcnoita.client.player.ClientWandCastHudState;
 import com.mcnoita.network.ModNetworking;
 import com.mcnoita.network.NoitaNetworkProtocol;
 import com.mcnoita.network.WandCastRequest;
@@ -25,14 +26,18 @@ public final class ClientWandCastEvents {
             && client.world != null
             && client.currentScreen == null
             && isAttackPressed
-            && client.player.getStackInHand(Hand.MAIN_HAND).getItem() instanceof NoitaWandItem) {
+            && client.player.getStackInHand(Hand.MAIN_HAND).getItem() instanceof NoitaWandItem
+            && ClientWandCastHudState.hasCatalogBinding()) {
             net.minecraft.network.PacketByteBuf buf = PacketByteBufs.create();
             new WandCastRequest(
                 NoitaNetworkProtocol.VERSION,
                 sequence++,
                 Hand.MAIN_HAND,
                 client.player.getInventory().selectedSlot,
-                NoitaNetworkProtocol.wandStateHash(client.player.getMainHandStack())
+                ClientWandCastHudState.getStateHash(),
+                ClientWandCastHudState.getWandRevision(),
+                ClientWandCastHudState.getCatalogEpoch(),
+                ClientWandCastHudState.getCatalogHash()
             ).write(buf);
             ClientPlayNetworking.send(ModNetworking.CAST_WAND, buf);
         }
