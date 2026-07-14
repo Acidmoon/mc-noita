@@ -37,7 +37,18 @@ public class NoitaSpellItem extends Item {
         if (!(stack.getItem() instanceof NoitaSpellItem spellItem) || !spellItem.template.hasLimitedUses()) {
             return;
         }
-        stack.getOrCreateNbt().putInt(REMAINING_USES_KEY, Math.max(0, getRemainingUses(stack) - 1));
+        setRemainingUses(stack, Math.max(0, getRemainingUses(stack) - 1));
+    }
+
+    /**
+     * Applies a value already decided by the pure evaluator. Unlimited cards do
+     * not gain an unnecessary NBT field, preserving the legacy stack format.
+     */
+    public static void setRemainingUses(ItemStack stack, int remainingUses) {
+        if (!(stack.getItem() instanceof NoitaSpellItem spellItem) || !spellItem.template.hasLimitedUses()) {
+            return;
+        }
+        stack.getOrCreateNbt().putInt(REMAINING_USES_KEY, Math.max(0, remainingUses));
     }
 
     public static boolean hasUsesRemaining(ItemStack stack) {
