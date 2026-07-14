@@ -1,7 +1,7 @@
 package com.mcnoita.spell.trigger;
 
 import com.mcnoita.MCNoita;
-import com.mcnoita.entity.SparkBoltProjectileEntity;
+import com.mcnoita.spell.exec.ProjectileDispatcher;
 import com.mcnoita.spell.NoitaProjectilePayload;
 import java.util.List;
 import net.minecraft.entity.LivingEntity;
@@ -29,7 +29,7 @@ public final class TriggerPayloadSpawner {
                     budgetIndex + entityCount);
                 budgetIndex += entityCount;
                 try {
-                    SparkBoltProjectileEntity.spawnPayloadProjectile(world, owner, position, direction, payload, childBudgets,
+                    ProjectileDispatcher.spawn(world, owner, position, direction, payload, childBudgets,
                         decision.releaseSequence());
                 } catch (RuntimeException failure) {
                     MCNoita.LOGGER.warn("Frozen trigger payload {} release {} failed after state commit", decision.nodePath(),
