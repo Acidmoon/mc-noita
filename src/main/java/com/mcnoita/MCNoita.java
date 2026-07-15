@@ -1,6 +1,7 @@
 package com.mcnoita;
 
 import com.mcnoita.catalog.SpellCatalogService;
+import com.mcnoita.catalog.SpellCatalogResourceReloadListener;
 import com.mcnoita.entity.ModEntities;
 import com.mcnoita.event.ModWandEvents;
 import com.mcnoita.item.ModItemGroups;
@@ -10,6 +11,7 @@ import com.mcnoita.particle.ModParticles;
 import com.mcnoita.player.NoitaHungerManager;
 import com.mcnoita.player.NoitaHoverManager;
 import com.mcnoita.screen.ModScreenHandlers;
+import com.mcnoita.spell.server.job.SpellJobServerService;
 import com.mcnoita.wand.NoitaWandHudSync;
 import com.mcnoita.world.NoitaTemporaryLightManager;
 import net.fabricmc.api.ModInitializer;
@@ -32,8 +34,10 @@ public class MCNoita implements ModInitializer {
         NoitaTemporaryLightManager.register();
         NoitaWandHudSync.register();
         ModWandEvents.register();
+        SpellJobServerService.register();
         ModItems.register();
         SpellCatalogService.getInstance().initializeFromLegacy();
+        SpellCatalogResourceReloadListener.register();
         ModItemGroups.register();
         LOGGER.info("Initializing MC Noita");
     }

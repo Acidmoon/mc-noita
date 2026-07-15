@@ -17,6 +17,14 @@ public final class NoitaNbtLimits {
     public static final int MAX_PAYLOAD_NODES = 128;
     public static final int MAX_PAYLOAD_NBT_NODES = 8_192;
     public static final int MAX_PAYLOAD_CHILDREN = 32;
+    /** Persisted cross-tick jobs are intentionally much smaller than payload trees. */
+    public static final int MAX_SPELL_JOB_RECORDS = 64;
+    public static final int MAX_SPELL_JOB_STEPS = 4_096;
+    public static final int MAX_SPELL_JOB_PARAMETERS = 32;
+    public static final int MAX_SPELL_JOB_NBT_DEPTH = 16;
+    public static final int MAX_SPELL_JOB_NBT_NODES = 512;
+    public static final int MAX_SPELL_JOB_NBT_BYTES = 16_384;
+    public static final long MAX_SPELL_JOB_LIFETIME_TICKS = 72_000L;
     /** Must match the pure plan cap so accepted casts remain persistable. */
     public static final int MAX_MODIFIER_EFFECTS = ProjectilePlan.MAX_MODIFIER_EFFECTS;
     /** Structural traversal must admit the largest individually validated NBT list. */

@@ -1,4 +1,4 @@
-# G00-G04 Test Facilities
+# G00-G05 Test Facilities
 
 ## Commands
 
@@ -41,6 +41,16 @@ Run the G04 gate from the repository root:
 `verifyG04` adds pure invocation/trace fixtures and real Add Trigger/Divide
 server scenarios while retaining every G03 lifecycle and persistence check.
 
+Run the G05 gate from the repository root:
+
+```powershell
+.\gradlew.bat verifyG05
+```
+
+`verifyG05` runs catalog validation, all JUnit tests, the isolated GameTest
+fixture suite, the headless Fabric GameTest server, the common-server
+architecture check, dedicated-server smoke, and the production build.
+
 ## JUnit Tags
 
 - `characterization` records observed current behavior and catalog facts.
@@ -50,15 +60,20 @@ server scenarios while retaining every G03 lifecycle and persistence check.
   and rate-limit behavior fixed in G00.
 
 Current stable tests cover catalog identity and resources, finite template
-values, v0 to v3 NBT migration, future-version rejection, slot and frozen-tree
-limits, packet round trips, malformed input rejection, replay/order checks,
-independent token buckets, Trigger prepayment, Shot State isolation, runtime
-release decisions, and frozen payload serialization.
+values, v0 to v5 NBT migration, future-version rejection, slot and frozen-tree
+limits, centrally configured Trigger-runtime ceilings, v4 `DamageProfile` compatibility, strict v5 persistent-job codecs,
+packet round trips, malformed input rejection, replay/order checks, transaction
+binding and budget rejection, independent token buckets, Trigger prepayment,
+Shot State isolation, runtime release decisions, and frozen payload
+serialization. `SpellJobManagerTest` additionally covers lifetime-lease
+transfer, fresh per-step reservation, owner/chunk gates, expiry, hard-budget
+exhaustion, duplicate/unsupported records, and idempotent versus non-idempotent
+recovery.
 
 ## GameTest Layout
 
 `src/gametest` is a test-only Fabric mod and is excluded from the release JAR.
-It declares twenty-seven fixed-tick, empty-structure scenarios for Starter Wand,
+It declares thirty-three fixed-tick, empty-structure scenarios for Starter Wand,
 Spark Bolt, Bomb, Double Spell, Damage Plus, Spark/Bomb Trigger block/entity
 hits, sequential Piercing entity Hits, nested Trigger release, landed MINE
 proximity Hit, 0/1-tick Timer release, Piercing collision plus same-tick Timer
@@ -77,13 +92,29 @@ the server tick to advance and the authoritative entity ceiling to hold.
 G03 replaces the Trigger placeholder with real entity spawning and collision
 fixtures. Unit tests additionally cover collision-key de-duplication, Timer
 collision plus expiry, Expiration one-shot behavior, nested runtime budget
-reservation, v3 identity/schema corruption, 64-entry modifier lists, state
-persistence, and corrupt-tree rejection. The Fabric fixture exercises
-Minecraft's `UNLOADED_TO_CHUNK` removal reason and restores the saved entity
-before a later real termination.
-Full crash recovery still requires a persistent execution ledger and transaction;
-normal reload semantics are bounded by persisted runtime flags, not claimed as
-crash-safe exactly-once.
+reservation, v3/v4/v5 identity/schema corruption, v4 damage-profile
+compatibility, 64-entry modifier lists, state persistence, and corrupt-tree
+rejection. The Fabric fixture exercises Minecraft's `UNLOADED_TO_CHUNK` removal
+reason and restores the saved entity before a later real termination.
+
+G05 adds six real-server scenarios, bringing the suite to 33: a root plus
+frozen Trigger child rejected by the configured per-cast entity ceiling proves
+complete wand NBT stays byte-identical and execution does not
+start; an open editor rejects the packet; stale client wand revision and stale
+catalog epoch both reject before commit; and two real `HEAL` collisions prove
+that a wounded teammate is healed while an unrelated hostile remains unchanged
+when `friendlyFire=false`. The healing scenarios additionally assert projectile
+termination, so an unchanged health value cannot pass merely because a target
+was missed. A post-reservation stack-swap fixture proves the second binding
+check rejects an externally edited held wand without overwriting either stack.
+The Bomb entity-Hit fixture deliberately crosses a real chunk seam, exercising
+the live multi-chunk query reservation rather than relying on the GameTest
+grid's incidental alignment.
+
+Persistent-job save/recovery behavior is currently covered by pure codec and
+manager fixtures. A concrete job handler must add an end-to-end GameTest for its
+own world effect; no generic background job is treated as implemented, and
+non-idempotent interrupted work is intentionally not retried as exactly-once.
 
 ## Dedicated Server Smoke
 

@@ -26,7 +26,7 @@ final class ProjectilePlanPayloadAdapter {
             context.catalogEpoch(), context.catalogHash());
         NoitaTriggerPlan triggerPlan = triggerPlan(plan, context, identity.nodePath());
         return new NoitaProjectilePayload(
-            plan.itemPath(), behavior(plan.behavior()), (float) plan.damage(), (float) plan.criticalChancePercent(),
+            plan.itemPath(), behavior(plan.behavior()), plan.damageProfile(), (float) plan.criticalChancePercent(),
             MinecraftTimeAdapter.toMinecraftTicks(plan.lifetime(), 1), plan.trailLightStacks(), (float) plan.explosionRadius(),
             (float) Math.max(0.2, Math.min(8.0, plan.speed() / NOITA_SPEED_TO_ARROW_SPEED)), 0.0f, (float) plan.gravity(),
             (float) plan.drag(), (float) plan.bounceDamping(), (float) plan.renderScale(), (float) plan.knockbackForce(),

@@ -35,10 +35,8 @@ public final class ModNetworking {
     }
 
     private static void handleCastRequest(ServerPlayerEntity player, WandCastRequest request) {
-        if (request.protocolVersion() != NoitaNetworkProtocol.VERSION
-            || !REQUEST_GUARD.acceptCast(player.getUuid(), request.sequence(), System.nanoTime())
-            || request.hand() != Hand.MAIN_HAND
-            || request.slot() != player.getInventory().selectedSlot) {
+        if (!isValidCastEnvelope(request, player.getInventory().selectedSlot)
+            || !REQUEST_GUARD.acceptCast(player.getUuid(), request.sequence(), System.nanoTime())) {
             return;
         }
 
@@ -60,6 +58,14 @@ public final class ModNetworking {
         NoitaWandCaster.cast(
             player, request.sequence(), request.stateHash(), request.wandRevision(), request.catalogEpoch(), request.catalogHash()
         );
+    }
+
+    /** Packet-only preflight kept separate so malformed hand/slot claims never consume a request sequence. */
+    static boolean isValidCastEnvelope(WandCastRequest request, int selectedSlot) {
+        return request != null
+            && request.protocolVersion() == NoitaNetworkProtocol.VERSION
+            && request.hand() == Hand.MAIN_HAND
+            && request.slot() == selectedSlot;
     }
 
     private static void handleHoverInput(ServerPlayerEntity player, HoverInputRequest request) {

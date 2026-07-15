@@ -1,5 +1,6 @@
 package com.mcnoita.spell.server.budget;
 
+import com.mcnoita.spell.trigger.TriggerRuntimeBudget;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.HashMap;
@@ -43,6 +44,19 @@ public final class SpellBudgetManager {
 
     public SpellBudgetManager(BudgetLimits limits) {
         this.limits = Objects.requireNonNull(limits, "limits");
+    }
+
+    /**
+     * The frozen Trigger-tree allocator needs the same per-cast limits that
+     * preflight used before WandState commit. Delayed children still obtain
+     * their central admission at release time; this ceiling only prevents a
+     * root payload from being persisted with impossible local capacity.
+     */
+    public TriggerRuntimeBudget triggerRuntimeBudgetCeiling() {
+        return new TriggerRuntimeBudget(
+            (int) BudgetLimits.effectiveLimit(limits.perCast(), BudgetKind.TRIGGER_RELEASES),
+            (int) BudgetLimits.effectiveLimit(limits.perCast(), BudgetKind.AUTHORITATIVE_ENTITIES)
+        );
     }
 
     public synchronized ReservationAttempt reserve(BudgetRequest request, long serverTick) {
@@ -102,6 +116,50 @@ public final class SpellBudgetManager {
         return true;
     }
 
+    /**
+     * Transfers a committed slice to a committed child lease without releasing
+     * its scopes. This is deliberately distinct from releaseUnused: a root cast
+     * can hand its admitted PERSISTENT_JOBS capacity to a durable job, while the
+     * root's close releases every other cost and the child retains in-flight
+     * owner/chunk/dimension/global accounting until it closes.
+     */
+    synchronized BudgetReservation transferCommittedSlice(
+        BudgetReservation source, UUID leaseExecutionId, BudgetRequest sourceSlice
+    ) {
+        requireOwned(source);
+        Objects.requireNonNull(leaseExecutionId, "leaseExecutionId");
+        Objects.requireNonNull(sourceSlice, "sourceSlice");
+        if (source.stateUnsafe() != BudgetReservation.State.COMMITTED) {
+            throw new IllegalStateException("only a committed reservation can transfer a durable lease");
+        }
+        requireActive(source);
+        if (source.executionId().equals(leaseExecutionId)) {
+            throw new IllegalArgumentException("lease execution ID must differ from its source reservation");
+        }
+        if (activeReservations.containsKey(leaseExecutionId)) {
+            throw new IllegalArgumentException("lease execution ID is already active");
+        }
+        validateUnusedSlice(source, sourceSlice);
+        if (sourceSlice.isEmpty()) {
+            throw new IllegalArgumentException("a transferred lease must contain at least one budget cost");
+        }
+        String transferKey = "lease/" + leaseExecutionId;
+        if (source.hasReleaseKeyUnsafe(transferKey)) {
+            throw new IllegalStateException("source reservation already transferred this lease");
+        }
+
+        BudgetRequest leaseRequest = new BudgetRequest(leaseExecutionId, sourceSlice.ownerId(), sourceSlice.dimensionId(),
+            sourceSlice.costs(), sourceSlice.chunkCosts());
+        // Record the source slice as no longer owned by the parent, but do not
+        // subtract any scope. The child closes that exact capacity later.
+        source.recordReleaseUnsafe(transferKey, sourceSlice);
+        BudgetReservation lease = new BudgetReservation(this, leaseRequest, source.reservedTickUnsafe(),
+            source.reservedWindowUnsafe());
+        lease.stateUnsafe(BudgetReservation.State.COMMITTED);
+        activeReservations.put(leaseExecutionId, lease);
+        return lease;
+    }
+
     synchronized boolean close(BudgetReservation reservation) {
         requireOwned(reservation);
         if (reservation.stateUnsafe() == BudgetReservation.State.CLOSED) {
@@ -127,6 +185,32 @@ public final class SpellBudgetManager {
 
     public synchronized int activeReservationCount() {
         return activeReservations.size();
+    }
+
+    /**
+     * Server lifecycle boundary for the production singleton. Callers must
+     * close every reservation first; silently dropping an in-flight lease would
+     * corrupt the accounting that protects the next integrated-server session.
+     */
+    public synchronized void resetForServerLifecycle() {
+        if (!activeReservations.isEmpty()) {
+            throw new IllegalStateException("cannot reset a budget manager with active reservations");
+        }
+        ownerInFlight.clear();
+        chunkInFlight.clear();
+        dimensionInFlight.clear();
+        globalInFlight.clear();
+        ownerTick.clear();
+        chunkTick.clear();
+        dimensionTick.clear();
+        globalTick.clear();
+        ownerWindow.clear();
+        chunkWindow.clear();
+        dimensionWindow.clear();
+        globalWindow.clear();
+        lastTick = -1L;
+        activeTick = -1L;
+        activeWindow = -1L;
     }
 
     public synchronized Map<BudgetKind, Long> globalInFlightUsage() {

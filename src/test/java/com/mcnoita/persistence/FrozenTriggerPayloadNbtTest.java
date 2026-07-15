@@ -13,11 +13,14 @@ import com.mcnoita.spell.NoitaProjectilePayload;
 import com.mcnoita.spell.NoitaSpellTriggerMode;
 import com.mcnoita.spell.NoitaTriggerPlan;
 import com.mcnoita.spell.NoitaTriggerReleasePolicy;
+import com.mcnoita.spell.damage.DamageChannel;
+import com.mcnoita.spell.damage.DamageProfile;
 import com.mcnoita.spell.trigger.CollisionKey;
 import com.mcnoita.spell.trigger.TriggerRuntimeBudget;
 import com.mcnoita.spell.trigger.TriggerRuntimeState;
 import com.mcnoita.spell.trigger.TriggerRuntimeStateNbtCodec;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import net.minecraft.nbt.NbtCompound;
 import net.minecraft.nbt.NbtElement;
@@ -34,6 +37,31 @@ class FrozenTriggerPayloadNbtTest {
 
         assertEquals(NoitaNbtSchema.CURRENT_VERSION, encoded.getInt(NoitaNbtSchema.VERSION_KEY));
         assertEquals(original, NoitaProjectilePayload.tryFromNbt(encoded).orElseThrow());
+    }
+
+    @Test
+    void configuredRuntimeBudgetAboveTheLegacyDefaultSurvivesFrozenNbtRoundTrip() {
+        TriggerRuntimeBudget configured = new TriggerRuntimeBudget(64, 64);
+        NoitaProjectilePayload original = nestedPayload().withRuntimeBudget(configured);
+
+        NoitaProjectilePayload decoded = NoitaProjectilePayload.tryFromNbt(original.toNbt()).orElseThrow();
+
+        assertEquals(configured, decoded.runtimeBudget());
+    }
+
+    @Test
+    void dynamicLegacyChildDerivesABoundUniqueIdentityBeforeWorldAdmission() {
+        NoitaProjectilePayload parentPayload = nestedPayload();
+        NoitaExecutionIdentity parent = parentPayload.executionIdentity();
+
+        NoitaProjectilePayload first = legacyPayload(List.of()).withDerivedRuntimeIdentity(parent, "secondary", 0);
+        NoitaProjectilePayload second = legacyPayload(List.of()).withDerivedRuntimeIdentity(parent, "secondary", 1);
+
+        assertTrue(first.executionIdentity().isBound());
+        assertEquals(parent.executionId(), first.executionIdentity().executionId());
+        assertEquals(parent.catalogEpoch(), first.executionIdentity().catalogEpoch());
+        assertEquals(parent.catalogHash(), first.executionIdentity().catalogHash());
+        assertFalse(first.executionIdentity().nodePath().equals(second.executionIdentity().nodePath()));
     }
 
     @Test
@@ -64,6 +92,10 @@ class FrozenTriggerPayloadNbtTest {
         missingBudget.remove("RuntimeBudget");
         assertTrue(NoitaProjectilePayload.tryFromNbt(missingBudget).isEmpty());
 
+        NbtCompound missingDamageProfile = nestedPayload().toNbt();
+        missingDamageProfile.remove(DamageProfileNbtCodec.PROFILE_KEY);
+        assertTrue(NoitaProjectilePayload.tryFromNbt(missingDamageProfile).isEmpty());
+
         NbtCompound unboundExecution = nestedPayload().toNbt();
         unboundExecution.putString("ExecutionId", NoitaExecutionIdentity.UNBOUND_EXECUTION_ID.toString());
         assertTrue(NoitaProjectilePayload.tryFromNbt(unboundExecution).isEmpty());
@@ -89,6 +121,72 @@ class FrozenTriggerPayloadNbtTest {
         oversizedRadius.putDouble("ExplosionRadius", Double.MAX_VALUE);
         NoitaProjectilePayload decoded = NoitaProjectilePayload.tryFromNbt(oversizedRadius).orElseThrow();
         assertEquals(NoitaNbtLimits.MAX_EXPLOSION_RADIUS, decoded.explosionRadius());
+    }
+
+    @Test
+    void scalarPayloadsMapOnlyToProjectileWhileProfilesRoundTripAllFrozenChannels() {
+        NoitaProjectilePayload legacy = legacyPayload(List.of());
+        assertEquals(1.0, legacy.damageProfile().amount(DamageChannel.PROJECTILE));
+        assertEquals(0.0, legacy.damageProfile().amount(DamageChannel.FIRE));
+
+        NoitaProjectilePayload base = nestedPayload();
+        DamageProfile profile = new DamageProfile(Map.of(
+            DamageChannel.PROJECTILE, 2.5,
+            DamageChannel.FIRE, 1.25,
+            DamageChannel.HOLY, 0.5
+        ));
+        NoitaProjectilePayload multiChannel = new NoitaProjectilePayload(
+            base.itemPath(), base.behavior(), profile, base.criticalChancePercent(), base.lifetimeTicks(),
+            base.trailLightStacks(), base.explosionRadius(), base.speed(), base.divergence(), base.gravity(), base.drag(),
+            base.bounceDamping(), base.renderScale(), base.knockbackForce(), base.friendlyFire(), base.piercing(),
+            base.projectileCount(), base.burstSpreadDegrees(), base.bounceCount(), base.modifierEffects(),
+            base.triggerPlan(), base.executionIdentity(), base.runtimeBudget()
+        );
+
+        NoitaProjectilePayload decoded = NoitaProjectilePayload.tryFromNbt(multiChannel.toNbt()).orElseThrow();
+        assertEquals(profile, decoded.damageProfile());
+        assertEquals(2.5f, decoded.damage());
+    }
+
+    @Test
+    void v3ScalarPayloadMigratesToProjectileProfileAndMalformedV4ProfilesAreRejected() {
+        NbtCompound v3 = nestedPayload().toNbt();
+        downgradePayloadTreeToV3(v3);
+        v3.putFloat("Damage", 6.5f);
+
+        NoitaProjectilePayload migrated = NoitaProjectilePayload.tryFromNbt(v3).orElseThrow();
+        assertEquals(6.5, migrated.damageProfile().amount(DamageChannel.PROJECTILE));
+        assertEquals(0.0, migrated.damageProfile().amount(DamageChannel.ELECTRICITY));
+        assertEquals(1.0, migrated.triggerPlan().payloads().get(0).projectiles().get(0)
+            .damageProfile().amount(DamageChannel.PROJECTILE));
+
+        NbtCompound unknownChannel = nestedPayload().toNbt();
+        unknownChannel.getCompound(DamageProfileNbtCodec.PROFILE_KEY).putDouble("NOT_A_CHANNEL", 1.0);
+        assertTrue(NoitaProjectilePayload.tryFromNbt(unknownChannel).isEmpty());
+
+        NbtCompound nonFiniteChannel = nestedPayload().toNbt();
+        nonFiniteChannel.getCompound(DamageProfileNbtCodec.PROFILE_KEY).putDouble(DamageChannel.FIRE.name(), Double.NaN);
+        assertTrue(NoitaProjectilePayload.tryFromNbt(nonFiniteChannel).isEmpty());
+
+        NbtCompound oversizedChannel = nestedPayload().toNbt();
+        oversizedChannel.getCompound(DamageProfileNbtCodec.PROFILE_KEY).putDouble(DamageChannel.FIRE.name(),
+            NoitaNbtLimits.MAX_ABSOLUTE_PROJECTILE_DAMAGE + 1.0);
+        assertTrue(NoitaProjectilePayload.tryFromNbt(oversizedChannel).isEmpty());
+
+        NbtCompound mismatchedMirror = nestedPayload().toNbt();
+        mismatchedMirror.putFloat("Damage", 9.0f);
+        assertTrue(NoitaProjectilePayload.tryFromNbt(mismatchedMirror).isEmpty());
+
+        NbtCompound nestedMismatchedMirror = nestedPayload().toNbt();
+        NbtCompound nestedChild = nestedMismatchedMirror.getCompound("TriggerPlan")
+            .getList("Payloads", NbtElement.COMPOUND_TYPE).getCompound(0)
+            .getList("Projectiles", NbtElement.COMPOUND_TYPE).getCompound(0);
+        nestedChild.putFloat("Damage", 9.0f);
+        assertTrue(NoitaProjectilePayload.tryFromNbt(nestedMismatchedMirror).isEmpty());
+
+        NbtCompound nonFiniteMirror = nestedPayload().toNbt();
+        nonFiniteMirror.putFloat("Damage", Float.NaN);
+        assertTrue(NoitaProjectilePayload.tryFromNbt(nonFiniteMirror).isEmpty());
     }
 
     @Test
@@ -240,6 +338,18 @@ class FrozenTriggerPayloadNbtTest {
             effects.add(net.minecraft.nbt.NbtString.of(effectName));
         }
         return effects;
+    }
+
+    private static void downgradePayloadTreeToV3(NbtCompound payload) {
+        payload.putInt(NoitaNbtSchema.VERSION_KEY, 3);
+        payload.remove(DamageProfileNbtCodec.PROFILE_KEY);
+        NbtList payloadShots = payload.getCompound("TriggerPlan").getList("Payloads", NbtElement.COMPOUND_TYPE);
+        for (int payloadIndex = 0; payloadIndex < payloadShots.size(); payloadIndex++) {
+            NbtList projectiles = payloadShots.getCompound(payloadIndex).getList("Projectiles", NbtElement.COMPOUND_TYPE);
+            for (int projectileIndex = 0; projectileIndex < projectiles.size(); projectileIndex++) {
+                downgradePayloadTreeToV3(projectiles.getCompound(projectileIndex));
+            }
+        }
     }
 
     private static NoitaProjectilePayload payloadTree(int currentDepth, int maximumDepth, String nodePath, UUID executionId) {

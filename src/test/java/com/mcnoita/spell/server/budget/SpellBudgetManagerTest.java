@@ -177,6 +177,35 @@ class SpellBudgetManagerTest {
         assertTrue(reservation.close());
     }
 
+    @Test
+    void committedPersistentSliceTransfersToChildLeaseUntilThatLeaseCloses() {
+        SpellBudgetManager manager = new SpellBudgetManager(BudgetLimits.unlimited());
+        UUID owner = UUID.randomUUID();
+        UUID rootId = UUID.randomUUID();
+        UUID leaseId = UUID.randomUUID();
+        ChunkBudgetKey chunk = new ChunkBudgetKey(OVERWORLD, 4, 7);
+        BudgetRequest rootRequest = BudgetRequest.builder(rootId, OVERWORLD)
+            .owner(owner)
+            .addInChunk(chunk, BudgetKind.PERSISTENT_JOBS, 1L)
+            .build();
+        BudgetReservation root = accepted(manager, rootRequest, 0L);
+        assertTrue(root.commit());
+        BudgetRequest transferred = BudgetRequest.builder(rootId, OVERWORLD)
+            .owner(owner)
+            .addInChunk(chunk, BudgetKind.PERSISTENT_JOBS, 1L)
+            .build();
+
+        BudgetReservation lease = root.transferCommittedSlice(leaseId, transferred);
+
+        assertTrue(root.close());
+        assertEquals(Map.of(BudgetKind.PERSISTENT_JOBS, 1L), manager.globalInFlightUsage());
+        assertEquals(1, manager.activeReservationCount());
+        assertTrue(lease.close());
+        assertFalse(lease.close());
+        assertEquals(Map.of(), manager.globalInFlightUsage());
+        assertEquals(0, manager.activeReservationCount());
+    }
+
     private static BudgetReservation accepted(SpellBudgetManager manager, BudgetRequest request, long tick) {
         SpellBudgetManager.ReservationAttempt attempt = manager.reserve(request, tick);
         assertTrue(attempt.accepted(), () -> "expected reservation but got " + attempt.diagnostic());

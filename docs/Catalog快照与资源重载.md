@@ -17,15 +17,32 @@
 `SpellCatalogService.reload(Map<String, SpellDefinition>)` 接受覆盖项而非新的 Item 注册：
 
 1. 校验覆盖项的 key 与 definition ID 一致，且每个 ID 都来自启动时捕获的内置 ID 集合。
-2. 在局部 merged map 上应用所有覆盖项，重新校验并计算规范化 SHA-256。
+2. 每次重载都从启动时冻结的 built-in definitions 重建局部 map，再应用本轮完整 override 集合，重新校验并计算规范化 SHA-256；删除文件或字段会回退到 built-in 值，绝不从前一 snapshot 继承。
 3. 内容哈希相同则保留原 `CatalogSnapshot` 和 epoch。
 4. 内容不同才构造 epoch 加一的新快照，并以一次原子引用写入发布。
 5. 校验失败时不替换当前快照，调用方可从 `ReloadResult.errors()` 取得原因。
 
 规范化哈希覆盖 `SpellDefinition`、全部密封 `SpellAction`、投射物、Shot Modifier、时序、Trigger、TargetQuery 和所有影响求值的集合/列表字段。目录 ID、TargetQuery 的集合字段会排序；语义有序的 action、effect 和 source 列表保持原顺序。
 
-当前工作包提供的是来源无关的重载服务接口。数据包 JSON codec 和 Fabric `SERVER_DATA` reload listener 应在后续数据目录工作中先解析并校验完整 override 集，再调用该接口；它们不得在资源重载中注册新的 Minecraft Item ID。
+`SpellCatalogResourceReloadListener` 已在 `SpellCatalogService.initializeFromLegacy()` 后注册为 Fabric `SERVER_DATA` listener。它读取所有数据包中的
+`data/<namespace>/spell_overrides/<name>.json`，先解析整批资源，再只用一轮
+`SpellCatalogService.reload(...)` 发布。任一 JSON、字段或 ID 错误都会记录诊断并保留旧 snapshot；listener 不会注册 Item，也不会在失败时发布半个目录。
+
+G05 的 override 语法刻意很小：每个文件必须包含完整的 `id`，并且只能覆盖
+`mana_cost`、`recursive`、`use_consumption_policy` 和 `related_projectile`。例如：
+
+```json
+{
+  "id": "mc-noita:spark_bolt",
+  "mana_cost": 8,
+  "recursive": false,
+  "use_consumption_policy": "WHEN_PROJECTILE_SHOT",
+  "related_projectile": "spark_bolt"
+}
+```
+
+分类和完整 action tree 仍从启动快照冻结。它们需要带 field-path 诊断的完整、版本化 action codec 后才可开放；在此之前 listener 明确拒绝 `actions` 等未知字段，避免不完整 JSON 改变纯 evaluator 行为。
 
 ## 测试
 
-`SpellCatalogServiceTest` 覆盖插入顺序无关的稳定 SHA-256、有效覆盖的原子 epoch/hash 切换、未知 ID 保留旧快照，以及相同内容重载不增加 epoch。
+`SpellCatalogServiceTest` 覆盖插入顺序无关的稳定 SHA-256、有效覆盖的原子 epoch/hash 切换、未知 ID 保留旧快照、删除 override 回退 built-in，以及相同内容重载不增加 epoch。`SpellCatalogOverrideDecoderTest` 覆盖安全字段覆盖、冻结 action/category 保留、未知字段、非整数法力和 ID 不匹配拒绝。

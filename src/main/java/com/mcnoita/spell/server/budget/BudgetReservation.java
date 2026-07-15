@@ -1,5 +1,6 @@
 package com.mcnoita.spell.server.budget;
 
+import com.mcnoita.spell.trigger.TriggerRuntimeBudget;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.HashSet;
@@ -43,6 +44,11 @@ public final class BudgetReservation {
         return request;
     }
 
+    /** Returns the immutable per-cast Trigger ceiling used to preflight this reservation. */
+    public TriggerRuntimeBudget triggerRuntimeBudgetCeiling() {
+        return manager.triggerRuntimeBudgetCeiling();
+    }
+
     public State state() {
         return manager.stateOf(this);
     }
@@ -58,6 +64,15 @@ public final class BudgetReservation {
      */
     public boolean releaseUnused(String releaseKey, BudgetRequest unused) {
         return manager.releaseUnused(this, releaseKey, unused);
+    }
+
+    /**
+     * Moves a committed, still-owned slice into a child lease without changing
+     * any quota counters. Closing the parent then leaves the child slice
+     * in-flight until the long-lived owner closes the returned reservation.
+     */
+    public BudgetReservation transferCommittedSlice(UUID leaseExecutionId, BudgetRequest sourceSlice) {
+        return manager.transferCommittedSlice(this, leaseExecutionId, sourceSlice);
     }
 
     /**

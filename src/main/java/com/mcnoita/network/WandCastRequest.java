@@ -19,7 +19,8 @@ public record WandCastRequest(
     public WandCastRequest {
         hand = Objects.requireNonNull(hand, "hand");
         catalogHash = Objects.requireNonNull(catalogHash, "catalogHash");
-        if (protocolVersion < 0 || sequence < 0 || slot < -1 || slot >= 9 || wandRevision < 0L || catalogEpoch < 0L
+        boolean validSlot = hand == Hand.MAIN_HAND ? slot >= 0 && slot < 9 : slot == -1;
+        if (protocolVersion < 0 || sequence < 0 || !validSlot || wandRevision < 0L || catalogEpoch < 0L
             || !NoitaNetworkProtocol.isCanonicalCatalogHash(catalogHash)) {
             throw new IllegalArgumentException("invalid cast request binding");
         }

@@ -8,11 +8,16 @@ import java.util.List;
  * partition of its parent's remaining allowance, never a fresh default budget.
  */
 public record TriggerRuntimeBudget(int remainingReleaseEvents, int remainingSpawnedEntities) {
+    /** Matches the non-bypassable central hard caps for entities and releases. */
+    public static final int HARD_MAXIMUM = 128;
     public static final TriggerRuntimeBudget DEFAULT = new TriggerRuntimeBudget(32, 32);
 
     public TriggerRuntimeBudget {
         if (remainingReleaseEvents < 0 || remainingSpawnedEntities < 0) {
             throw new IllegalArgumentException("runtime budgets must not be negative");
+        }
+        if (remainingReleaseEvents > HARD_MAXIMUM || remainingSpawnedEntities > HARD_MAXIMUM) {
+            throw new IllegalArgumentException("runtime budgets exceed the server hard maximum");
         }
     }
 

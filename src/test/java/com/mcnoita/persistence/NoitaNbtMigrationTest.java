@@ -44,7 +44,7 @@ class NoitaNbtMigrationTest {
         g01.put("Discarded", discarded);
 
         assertTrue(NoitaNbtSchema.migrateToCurrent(g01, NoitaNbtSchema.Kind.CAST_STATE));
-        assertEquals(3, g01.getInt(NoitaNbtSchema.VERSION_KEY));
+        assertEquals(NoitaNbtSchema.CURRENT_VERSION, g01.getInt(NoitaNbtSchema.VERSION_KEY));
         assertFalse(g01.getBoolean("G02ReloadPrepared"));
         assertEquals(2, g01.getList("Discarded", net.minecraft.nbt.NbtElement.INT_TYPE).size());
     }

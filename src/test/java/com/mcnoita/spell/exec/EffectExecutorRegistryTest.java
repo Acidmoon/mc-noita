@@ -1,5 +1,7 @@
 package com.mcnoita.spell.exec;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -16,6 +18,7 @@ import com.mcnoita.spell.plan.SoundPlan;
 import com.mcnoita.spell.plan.SummonEffectNode;
 import com.mcnoita.spell.plan.TeleportEffectNode;
 import com.mcnoita.wand.model.NoitaDuration;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -43,6 +46,30 @@ class EffectExecutorRegistryTest {
         registry.register(new DeferredEffectNodeExecutor<>(ExplosionEffectNode.class));
 
         assertThrows(IllegalArgumentException.class, () -> registry.register(new DeferredEffectNodeExecutor<>(ExplosionEffectNode.class)));
+    }
+
+    @Test
+    void implementedWorldNodesAreRegisteredSeparatelyFromDeferredNoOps() {
+        EffectExecutorRegistry registry = EffectExecutorRegistry.createDefault();
+
+        assertFalse(registry.isDeferred(new ExplosionEffectNode("explosion", 1.0, 1.0, false)));
+        assertFalse(registry.isDeferred(new TeleportEffectNode("teleport", 1.0, true)));
+        assertFalse(registry.isDeferred(new BlockMutationEffectNode("mutation", BlockMutationEffectNode.MutationKind.BREAK, 1, 1.0)));
+        assertTrue(registry.isDeferred(new SummonEffectNode("summon", "minecraft:pig", 1, NoitaDuration.frames(1))));
+        assertTrue(registry.isDeferred(new FieldEffectNode("field", FieldEffectNode.FieldKind.GENERIC, 1.0, NoitaDuration.frames(1))));
+    }
+
+    @Test
+    void isolatedFailureDoesNotPreventTheNextRegistryAction() {
+        List<RuntimeException> failures = new ArrayList<>();
+
+        assertFalse(EffectExecutorRegistry.executeIsolated(() -> {
+            throw new IllegalStateException("first node failed");
+        }, failures::add));
+        assertTrue(EffectExecutorRegistry.executeIsolated(() -> { }, failures::add));
+
+        assertEquals(1, failures.size());
+        assertEquals("first node failed", failures.get(0).getMessage());
     }
 
     private static ProjectilePlan projectile() {

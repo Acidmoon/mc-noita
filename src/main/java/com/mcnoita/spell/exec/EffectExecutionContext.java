@@ -1,15 +1,17 @@
 package com.mcnoita.spell.exec;
 
 import com.mcnoita.MCNoita;
+import com.mcnoita.spell.NoitaExecutionIdentity;
 import com.mcnoita.spell.plan.EffectNode;
 import com.mcnoita.spell.plan.ProjectileEffectNode;
 import com.mcnoita.spell.plan.ResolvedCast;
 import com.mcnoita.spell.server.budget.BudgetReservation;
+import com.mcnoita.spell.server.budget.ChunkBudgetKey;
+import com.mcnoita.spell.trigger.RootTriggerBudgetAllocator;
 import com.mcnoita.spell.trigger.TriggerRuntimeBudget;
-import java.util.ArrayList;
-import java.util.Collections;
+import com.mcnoita.world.mutation.WorldMutationBudget;
+import com.mcnoita.world.mutation.WorldMutationContext;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -38,6 +40,7 @@ public final class EffectExecutionContext {
     private final String catalogHash;
     private final BudgetReservation reservation;
     private final EffectNodeBudgetReleaser budgetReleaser;
+    private final Map<String, WorldMutationBudget> immediateWorldBudgets;
     private final boolean rootBudgetAccepted;
     private final Map<String, List<TriggerRuntimeBudget>> rootProjectileBudgets;
 
@@ -52,18 +55,42 @@ public final class EffectExecutionContext {
         ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation,
         EffectNodeBudgetReleaser budgetReleaser
     ) {
+        this(player, resolvedCast, executionId, reservation, budgetReleaser, Map.of());
+    }
+
+    /** The transaction freezes chunks for immediate nodes whose target is known before commit. */
+    public EffectExecutionContext(
+        ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation,
+        EffectNodeBudgetReleaser budgetReleaser, Map<String, ChunkBudgetKey> synchronousNodeChunks
+    ) {
+        this(player, resolvedCast, executionId, reservation, budgetReleaser, synchronousNodeChunks, Map.of());
+    }
+
+    /** The transaction freezes multi-chunk entity-query coverage for immediate explosions before commit. */
+    public EffectExecutionContext(
+        ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation,
+        EffectNodeBudgetReleaser budgetReleaser, Map<String, ChunkBudgetKey> synchronousNodeChunks,
+        Map<String, java.util.Set<ChunkBudgetKey>> synchronousEntityQueryChunks
+    ) {
         this.player = Objects.requireNonNull(player, "player");
         Objects.requireNonNull(resolvedCast, "resolvedCast");
+        synchronousNodeChunks = Map.copyOf(Objects.requireNonNull(synchronousNodeChunks, "synchronousNodeChunks"));
+        synchronousEntityQueryChunks = Map.copyOf(Objects.requireNonNull(synchronousEntityQueryChunks,
+            "synchronousEntityQueryChunks"));
         this.world = player.getServerWorld();
         this.spawnPosition = spellSpawnPosition(player);
         this.direction = player.getRotationVec(1.0f);
         this.executionId = Objects.requireNonNull(executionId, "executionId");
         this.catalogEpoch = resolvedCast.catalogEpoch();
         this.catalogHash = resolvedCast.catalogHash();
-        this.reservation = reservation;
+        this.reservation = Objects.requireNonNull(reservation, "reservation");
         this.budgetReleaser = EffectNodeBudgetReleaser.require(budgetReleaser);
+        this.immediateWorldBudgets = ImmediateWorldBudgetAllocator.allocate(reservation.request(), resolvedCast.effectPlan().nodes(),
+            synchronousNodeChunks, synchronousEntityQueryChunks);
 
-        RootBudgetAllocation allocation = allocateRootBudgets(resolvedCast.effectPlan().nodes());
+        RootTriggerBudgetAllocator.Allocation allocation = RootTriggerBudgetAllocator.allocate(
+            resolvedCast.effectPlan().nodes(), reservation.triggerRuntimeBudgetCeiling()
+        );
         this.rootBudgetAccepted = allocation.accepted();
         this.rootProjectileBudgets = allocation.budgets();
     }
@@ -96,20 +123,44 @@ public final class EffectExecutionContext {
         return catalogHash;
     }
 
-    /** May be null only for the deprecated legacy/test execution overload. */
+    /**
+     * Binds a world operation to the committed cast rather than allowing a
+     * typed executor to invent ownership, dimension, or catalog identity.
+     * Immediate G05 executors receive disjoint local slices of the
+     * transaction's already-reserved root request. Cross-tick budget retention
+     * belongs to the persistent-job boundary.
+     */
+    public WorldMutationContext worldMutationContext(EffectNode node) {
+        Objects.requireNonNull(node, "node");
+        WorldMutationBudget budget = immediateWorldBudgets.getOrDefault(node.nodePath(), ImmediateWorldBudgetAllocator.DENIED);
+        return new WorldMutationContext(world, player, player.getUuid(), world.getRegistryKey(),
+            new NoitaExecutionIdentity(executionId, node.nodePath(), catalogEpoch, catalogHash),
+            budget);
+    }
+
     public BudgetReservation reservation() {
         return reservation;
     }
 
     public List<TriggerRuntimeBudget> requireRootBudgets(ProjectileEffectNode node) {
         if (!rootBudgetAccepted) {
-            throw new IllegalStateException("accepted plan exceeded the legacy trigger runtime root budget");
+            throw new IllegalStateException("accepted plan exceeded its preflighted trigger runtime budget");
         }
         List<TriggerRuntimeBudget> budgets = rootProjectileBudgets.get(node.nodePath());
         if (budgets == null || budgets.size() != node.projectile().projectileCount()) {
             throw new IllegalStateException("root projectile budget was not prepared for " + node.nodePath());
         }
         return budgets;
+    }
+
+    /**
+     * Returns the root projectile's local slice of the already committed
+     * reservation. Delayed trigger payloads do not receive this slice because
+     * the root reservation closes before they run and must re-reserve safely.
+     */
+    public WorldMutationBudget rootProjectileSpawnBudget(ProjectileEffectNode node) {
+        Objects.requireNonNull(node, "node");
+        return immediateWorldBudgets.getOrDefault(node.nodePath(), ImmediateWorldBudgetAllocator.DENIED);
     }
 
     public void reportNodeFailure(EffectNode node, String stage, RuntimeException failure) {
@@ -132,9 +183,22 @@ public final class EffectExecutionContext {
     }
 
     public void reportDeferred(EffectNode node) {
+        reportDeferred(node, "no safe world executor is registered for " + node.getClass().getSimpleName());
+    }
+
+    /** Allows a policy-specific deferred executor to retain its rejection reason. */
+    public void reportDeferred(EffectNode node, String reason) {
+        Objects.requireNonNull(reason, "reason");
         reportNodeFailure(node, "deferred", new UnsupportedOperationException(
-            "no safe world executor is registered for " + node.getClass().getSimpleName()
+            reason
         ));
+    }
+
+    /** Records a deliberate policy rejection without rolling back the committed wand state. */
+    public void rejectNode(EffectNode node, String reason) {
+        Objects.requireNonNull(reason, "reason");
+        reportNodeFailure(node, "rejected", new IllegalArgumentException(reason));
+        releaseUnusedBudget(node, "rejected");
     }
 
     /** Releases a failed node's unused reservation slice once, after its diagnostic is recorded. */
@@ -150,62 +214,7 @@ public final class EffectExecutionContext {
         }
     }
 
-    private static RootBudgetAllocation allocateRootBudgets(List<EffectNode> nodes) {
-        List<RootSlot> slots = new ArrayList<>();
-        int rootEntityLimit = TriggerRuntimeBudget.DEFAULT.remainingSpawnedEntities();
-        for (EffectNode node : nodes) {
-            if (!(node instanceof ProjectileEffectNode projectileNode)) {
-                continue;
-            }
-            int projectileCount = projectileNode.projectile().projectileCount();
-            if (projectileCount < 1 || projectileCount > rootEntityLimit - slots.size()) {
-                return RootBudgetAllocation.rejected();
-            }
-            int futureEntities = cappedInt(projectileNode.projectile().futureEntityFootprintPerInstance());
-            int releaseEvents = cappedInt(projectileNode.projectile().staticReleaseEventFootprintPerInstance());
-            for (int index = 0; index < projectileCount; index++) {
-                slots.add(new RootSlot(projectileNode.nodePath(), new RootRequirement(releaseEvents, futureEntities)));
-            }
-        }
-        if (slots.isEmpty()) {
-            return RootBudgetAllocation.accepted(Map.of());
-        }
-
-        int requiredEvents = 0;
-        int requiredEntities = 0;
-        for (RootSlot slot : slots) {
-            requiredEvents = addCapped(requiredEvents, slot.requirement().releaseEvents());
-            requiredEntities = addCapped(requiredEntities, slot.requirement().futureEntities());
-        }
-        int availableEntities = rootEntityLimit - slots.size();
-        int availableEvents = TriggerRuntimeBudget.DEFAULT.remainingReleaseEvents();
-        if (requiredEntities > availableEntities || requiredEvents > availableEvents) {
-            return RootBudgetAllocation.rejected();
-        }
-
-        int[] events = new int[slots.size()];
-        int[] entities = new int[slots.size()];
-        for (int index = 0; index < slots.size(); index++) {
-            RootRequirement requirement = slots.get(index).requirement();
-            events[index] = requirement.releaseEvents();
-            entities[index] = requirement.futureEntities();
-        }
-        distribute(events, availableEvents - requiredEvents);
-        distribute(entities, availableEntities - requiredEntities);
-
-        Map<String, List<TriggerRuntimeBudget>> budgets = new LinkedHashMap<>();
-        for (int index = 0; index < slots.size(); index++) {
-            budgets.computeIfAbsent(slots.get(index).nodePath(), ignored -> new ArrayList<>())
-                .add(new TriggerRuntimeBudget(events[index], entities[index]));
-        }
-        Map<String, List<TriggerRuntimeBudget>> immutable = new LinkedHashMap<>();
-        for (Map.Entry<String, List<TriggerRuntimeBudget>> entry : budgets.entrySet()) {
-            immutable.put(entry.getKey(), List.copyOf(entry.getValue()));
-        }
-        return RootBudgetAllocation.accepted(Collections.unmodifiableMap(immutable));
-    }
-
-    private static Vec3d spellSpawnPosition(ServerPlayerEntity player) {
+    public static Vec3d spellSpawnPosition(ServerPlayerEntity player) {
         double yawRadians = Math.toRadians(player.getYaw());
         Vec3d forward = new Vec3d(-Math.sin(yawRadians), 0.0, Math.cos(yawRadians));
         Vec3d right = new Vec3d(-Math.cos(yawRadians), 0.0, -Math.sin(yawRadians));
@@ -215,33 +224,4 @@ public final class EffectExecutionContext {
             .add(0.0, -SPELL_SPAWN_DOWN_OFFSET, 0.0);
     }
 
-    private static void distribute(int[] values, int extras) {
-        for (int index = 0; values.length > 0 && index < extras; index++) {
-            values[index % values.length]++;
-        }
-    }
-
-    private static int addCapped(int left, int right) {
-        return right > Integer.MAX_VALUE - left ? Integer.MAX_VALUE : left + right;
-    }
-
-    private static int cappedInt(long value) {
-        return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
-    }
-
-    private record RootRequirement(int releaseEvents, int futureEntities) {
-    }
-
-    private record RootSlot(String nodePath, RootRequirement requirement) {
-    }
-
-    private record RootBudgetAllocation(boolean accepted, Map<String, List<TriggerRuntimeBudget>> budgets) {
-        private static RootBudgetAllocation accepted(Map<String, List<TriggerRuntimeBudget>> budgets) {
-            return new RootBudgetAllocation(true, budgets);
-        }
-
-        private static RootBudgetAllocation rejected() {
-            return new RootBudgetAllocation(false, Map.of());
-        }
-    }
 }

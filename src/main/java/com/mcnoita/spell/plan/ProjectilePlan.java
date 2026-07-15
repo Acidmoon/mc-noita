@@ -1,5 +1,6 @@
 package com.mcnoita.spell.plan;
 
+import com.mcnoita.spell.damage.DamageProfile;
 import com.mcnoita.wand.model.NoitaDuration;
 import java.util.List;
 import java.util.Objects;
@@ -9,7 +10,7 @@ public record ProjectilePlan(
     String nodePath,
     String itemPath,
     String behavior,
-    double damage,
+    DamageProfile damageProfile,
     double criticalChancePercent,
     NoitaDuration lifetime,
     int trailLightStacks,
@@ -42,6 +43,7 @@ public record ProjectilePlan(
         }
         Objects.requireNonNull(itemPath, "itemPath");
         Objects.requireNonNull(behavior, "behavior");
+        Objects.requireNonNull(damageProfile, "damageProfile");
         Objects.requireNonNull(lifetime, "lifetime");
         effects = List.copyOf(Objects.requireNonNull(effects, "effects"));
         if (effects.size() > MAX_MODIFIER_EFFECTS) {
@@ -50,6 +52,45 @@ public record ProjectilePlan(
         if (trigger != null && !trigger.nodePath().startsWith(nodePath + "/trigger")) {
             throw new IllegalArgumentException("trigger node path must descend from its projectile path");
         }
+    }
+
+    /**
+     * Compatibility bridge for existing scalar spell definitions. A scalar
+     * has always meant projectile damage, so it must not silently become a
+     * total or generic damage value when plans gain multiple channels.
+     */
+    public ProjectilePlan(
+        String nodePath,
+        String itemPath,
+        String behavior,
+        double damage,
+        double criticalChancePercent,
+        NoitaDuration lifetime,
+        int trailLightStacks,
+        double explosionRadius,
+        double speed,
+        double spreadOffsetDegrees,
+        double gravity,
+        double drag,
+        double bounceDamping,
+        double renderScale,
+        double knockbackForce,
+        boolean friendlyFire,
+        boolean piercing,
+        int projectileCount,
+        double burstSpreadDegrees,
+        TriggerPlan trigger,
+        int bounceCount,
+        List<String> effects
+    ) {
+        this(nodePath, itemPath, behavior, DamageProfile.legacyProjectile(damage), criticalChancePercent, lifetime,
+            trailLightStacks, explosionRadius, speed, spreadOffsetDegrees, gravity, drag, bounceDamping, renderScale,
+            knockbackForce, friendlyFire, piercing, projectileCount, burstSpreadDegrees, trigger, bounceCount, effects);
+    }
+
+    /** Compatibility projection for executors that still consume scalar projectile damage. */
+    public double damage() {
+        return damageProfile.projectileDamage();
     }
 
     public boolean hasTrigger() {

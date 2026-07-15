@@ -1,5 +1,6 @@
 package com.mcnoita.spell.server.budget;
 
+import com.mcnoita.spell.trigger.TriggerRuntimeBudget;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;
@@ -21,8 +22,8 @@ public record BudgetLimits(
     public static final Map<BudgetKind, Long> HARD_MAXIMUMS = Map.ofEntries(
         Map.entry(BudgetKind.ACTION_NODES, 8_192L),
         Map.entry(BudgetKind.LOGICAL_PROJECTILES, 512L),
-        Map.entry(BudgetKind.AUTHORITATIVE_ENTITIES, 128L),
-        Map.entry(BudgetKind.TRIGGER_RELEASES, 128L),
+        Map.entry(BudgetKind.AUTHORITATIVE_ENTITIES, (long) TriggerRuntimeBudget.HARD_MAXIMUM),
+        Map.entry(BudgetKind.TRIGGER_RELEASES, (long) TriggerRuntimeBudget.HARD_MAXIMUM),
         Map.entry(BudgetKind.ENTITY_SCANS, 16_384L),
         Map.entry(BudgetKind.BLOCK_CHECKS, 16_384L),
         Map.entry(BudgetKind.BLOCK_MUTATIONS, 2_048L),

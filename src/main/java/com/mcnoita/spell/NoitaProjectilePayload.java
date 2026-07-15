@@ -3,10 +3,15 @@ package com.mcnoita.spell;
 import com.mcnoita.persistence.NoitaNbtLimits;
 import com.mcnoita.persistence.NoitaNbtSafety;
 import com.mcnoita.persistence.NoitaNbtSchema;
+import com.mcnoita.persistence.DamageProfileNbtCodec;
+import com.mcnoita.spell.damage.DamageChannel;
+import com.mcnoita.spell.damage.DamageProfile;
 import com.mcnoita.spell.trigger.TriggerRuntimeBudget;
 import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -22,7 +27,7 @@ import net.minecraft.nbt.NbtList;
 public record NoitaProjectilePayload(
     String itemPath,
     NoitaProjectileBehavior behavior,
-    float damage,
+    DamageProfile damageProfile,
     float criticalChancePercent,
     int lifetimeTicks,
     int trailLightStacks,
@@ -85,8 +90,7 @@ public record NoitaProjectilePayload(
     public NoitaProjectilePayload {
         itemPath = itemPath == null || itemPath.isBlank() ? "spark_bolt" : boundedItemPath(itemPath);
         behavior = behavior == null ? NoitaProjectileBehavior.BOLT : behavior;
-        damage = boundedFinite(damage, "damage", -NoitaNbtLimits.MAX_ABSOLUTE_PROJECTILE_DAMAGE,
-            NoitaNbtLimits.MAX_ABSOLUTE_PROJECTILE_DAMAGE);
+        damageProfile = boundedDamageProfile(damageProfile);
         criticalChancePercent = boundedFinite(criticalChancePercent, "criticalChancePercent", 0.0f,
             NoitaNbtLimits.MAX_CRITICAL_CHANCE_PERCENT);
         explosionRadius = boundedFinite(explosionRadius, "explosionRadius", 0.0f, NoitaNbtLimits.MAX_EXPLOSION_RADIUS);
@@ -112,6 +116,42 @@ public record NoitaProjectilePayload(
         executionIdentity = executionIdentity == null ? NoitaExecutionIdentity.unbound("root") : executionIdentity;
         triggerPlan = triggerPlan == null ? NoitaTriggerPlan.none(executionIdentity.nodePath()) : triggerPlan;
         runtimeBudget = runtimeBudget == null ? TriggerRuntimeBudget.DEFAULT : runtimeBudget;
+    }
+
+    /**
+     * Compatibility bridge for all v3 and earlier call sites. A scalar damage
+     * value was always projectile damage, never a generic total that can be
+     * spread across new channels.
+     */
+    public NoitaProjectilePayload(
+        String itemPath,
+        NoitaProjectileBehavior behavior,
+        float damage,
+        float criticalChancePercent,
+        int lifetimeTicks,
+        int trailLightStacks,
+        float explosionRadius,
+        float speed,
+        float divergence,
+        float gravity,
+        float drag,
+        float bounceDamping,
+        float renderScale,
+        float knockbackForce,
+        boolean friendlyFire,
+        boolean piercing,
+        int projectileCount,
+        float burstSpreadDegrees,
+        int bounceCount,
+        List<NoitaModifierEffect> modifierEffects,
+        NoitaTriggerPlan triggerPlan,
+        NoitaExecutionIdentity executionIdentity,
+        TriggerRuntimeBudget runtimeBudget
+    ) {
+        this(itemPath, behavior, DamageProfile.legacyProjectile(damage), criticalChancePercent, lifetimeTicks,
+            trailLightStacks, explosionRadius, speed, divergence, gravity, drag, bounceDamping, renderScale,
+            knockbackForce, friendlyFire, piercing, projectileCount, burstSpreadDegrees, bounceCount,
+            modifierEffects, triggerPlan, executionIdentity, runtimeBudget);
     }
 
     /**
@@ -150,6 +190,44 @@ public record NoitaProjectilePayload(
             NoitaExecutionIdentity.unbound("root"), TriggerRuntimeBudget.DEFAULT);
     }
 
+    /** Profile-aware equivalent of the historic flat Trigger payload constructor. */
+    public NoitaProjectilePayload(
+        String itemPath,
+        NoitaProjectileBehavior behavior,
+        DamageProfile damageProfile,
+        float criticalChancePercent,
+        int lifetimeTicks,
+        int trailLightStacks,
+        float explosionRadius,
+        float speed,
+        float divergence,
+        float gravity,
+        float drag,
+        float bounceDamping,
+        float renderScale,
+        float knockbackForce,
+        boolean friendlyFire,
+        boolean piercing,
+        int projectileCount,
+        float burstSpreadDegrees,
+        NoitaSpellTriggerMode triggerMode,
+        int triggerDelayTicks,
+        int bounceCount,
+        List<NoitaModifierEffect> modifierEffects,
+        List<NoitaProjectilePayload> payloads
+    ) {
+        this(itemPath, behavior, damageProfile, criticalChancePercent, lifetimeTicks, trailLightStacks, explosionRadius,
+            speed, divergence, gravity, drag, bounceDamping, renderScale, knockbackForce, friendlyFire, piercing,
+            projectileCount, burstSpreadDegrees, bounceCount, modifierEffects,
+            NoitaTriggerPlan.legacy(triggerMode, triggerDelayTicks, payloads == null ? List.of() : payloads, "root"),
+            NoitaExecutionIdentity.unbound("root"), TriggerRuntimeBudget.DEFAULT);
+    }
+
+    /** Compatibility projection for scalar projectile consumers still being migrated. */
+    public float damage() {
+        return (float) damageProfile.projectileDamage();
+    }
+
     /** Old accessors remain until callers are fully migrated to triggerPlan(). */
     public NoitaSpellTriggerMode triggerMode() {
         return triggerPlan.mode();
@@ -172,7 +250,7 @@ public record NoitaProjectilePayload(
     }
 
     public NoitaProjectilePayload withRuntimeBudget(TriggerRuntimeBudget nextBudget) {
-        return new NoitaProjectilePayload(itemPath, behavior, damage, criticalChancePercent, lifetimeTicks,
+        return new NoitaProjectilePayload(itemPath, behavior, damageProfile, criticalChancePercent, lifetimeTicks,
             trailLightStacks, explosionRadius, speed, divergence, gravity, drag, bounceDamping, renderScale,
             knockbackForce, friendlyFire, piercing, projectileCount, burstSpreadDegrees, bounceCount, modifierEffects,
             triggerPlan, executionIdentity, nextBudget);
@@ -185,6 +263,22 @@ public record NoitaProjectilePayload(
      */
     public NoitaProjectilePayload withTreeIdentity(UUID executionId, long catalogEpoch, String catalogHash) {
         return withTreeIdentity(executionId, catalogEpoch, catalogHash, executionIdentity.nodePath());
+    }
+
+    /**
+     * Binds a legacy secondary projectile to its already-bound parent before
+     * world-policy admission. A unique child path prevents dynamic shards from
+     * colliding with the parent's persisted Trigger identity.
+     */
+    public NoitaProjectilePayload withDerivedRuntimeIdentity(
+        NoitaExecutionIdentity parentIdentity, String childKind, int childSequence
+    ) {
+        Objects.requireNonNull(parentIdentity, "parentIdentity");
+        if (!parentIdentity.isBound() || childKind == null || childKind.isBlank() || childSequence < 0) {
+            throw new IllegalArgumentException("runtime child identity requires a bound parent and non-negative sequence");
+        }
+        String path = parentIdentity.nodePath() + "/runtime/" + childKind + '/' + childSequence;
+        return withTreeIdentity(parentIdentity.executionId(), parentIdentity.catalogEpoch(), parentIdentity.catalogHash(), path);
     }
 
     private NoitaProjectilePayload withTreeIdentity(
@@ -206,7 +300,7 @@ public record NoitaProjectilePayload(
         }
         NoitaTriggerPlan boundTrigger = new NoitaTriggerPlan(triggerPlan.mode(), triggerPlan.timerDelayTicks(),
             boundPayloads, nodePath + "/trigger", triggerPlan.payloadDepth(), triggerPlan.releasePolicy());
-        return new NoitaProjectilePayload(itemPath, behavior, damage, criticalChancePercent, lifetimeTicks,
+        return new NoitaProjectilePayload(itemPath, behavior, damageProfile, criticalChancePercent, lifetimeTicks,
             trailLightStacks, explosionRadius, speed, divergence, gravity, drag, bounceDamping, renderScale,
             knockbackForce, friendlyFire, piercing, projectileCount, burstSpreadDegrees, bounceCount, modifierEffects,
             boundTrigger, identity, runtimeBudget);
@@ -242,7 +336,7 @@ public record NoitaProjectilePayload(
         }
         NoitaTriggerPlan rebasedTrigger = new NoitaTriggerPlan(triggerPlan.mode(), triggerPlan.timerDelayTicks(),
             rebasedPayloads, nodePath + "/trigger", triggerPlan.payloadDepth(), triggerPlan.releasePolicy());
-        return new NoitaProjectilePayload(itemPath, behavior, damage, criticalChancePercent, lifetimeTicks,
+        return new NoitaProjectilePayload(itemPath, behavior, damageProfile, criticalChancePercent, lifetimeTicks,
             trailLightStacks, explosionRadius, speed, divergence, gravity, drag, bounceDamping, renderScale,
             knockbackForce, friendlyFire, piercing, projectileCount, burstSpreadDegrees, bounceCount, modifierEffects,
             rebasedTrigger, identity, nextBudget);
@@ -253,7 +347,10 @@ public record NoitaProjectilePayload(
         NoitaNbtSchema.writeCurrentVersion(nbt);
         nbt.putString(ITEM_PATH_KEY, itemPath);
         nbt.putString(BEHAVIOR_KEY, behavior.name());
-        nbt.putFloat(DAMAGE_KEY, damage);
+        // Keep the scalar mirror for old diagnostics and explicit v3 migration,
+        // but v4 decoders treat DamageProfile as the mechanical authority.
+        nbt.putFloat(DAMAGE_KEY, damage());
+        nbt.put(DamageProfileNbtCodec.PROFILE_KEY, DamageProfileNbtCodec.toNbt(damageProfile));
         nbt.putFloat(CRITICAL_CHANCE_PERCENT_KEY, criticalChancePercent);
         nbt.putInt(LIFETIME_TICKS_KEY, lifetimeTicks);
         nbt.putInt(TRAIL_LIGHT_STACKS_KEY, trailLightStacks);
@@ -296,7 +393,7 @@ public record NoitaProjectilePayload(
             return Optional.empty();
         }
         try {
-            return Optional.of(readPayload(nbt, new DecodeContext(), "root", 0, false));
+            return Optional.of(readPayload(nbt, new DecodeContext(), "root", 0, false, false));
         } catch (IllegalArgumentException ignored) {
             return Optional.empty();
         }
@@ -329,7 +426,7 @@ public record NoitaProjectilePayload(
                         NoitaNbtLimits.MAX_PAYLOAD_NBT_NODES, NoitaNbtLimits.MAX_NBT_LIST_ENTRIES)) {
                     return Optional.empty();
                 }
-                payloads.add(readPayload(child, context, "root/" + index, 0, false));
+                payloads.add(readPayload(child, context, "root/" + index, 0, false, false));
             }
             return Optional.of(List.copyOf(payloads));
         } catch (IllegalArgumentException ignored) {
@@ -365,18 +462,24 @@ public record NoitaProjectilePayload(
 
     private static NoitaProjectilePayload readPayload(
         NbtCompound nbt, DecodeContext context, String fallbackNodePath, int currentPayloadDepth,
-        boolean currentSchemaAncestor
+        boolean frozenSchemaAncestor, boolean latestSchemaAncestor
     ) {
         // Every nested compound is an independently versioned payload. Checking
         // it here closes the old list-decoder gap where a future/corrupt child
         // could bypass the root migration and be accepted as a partial tree.
         int sourceVersion = NoitaNbtSchema.readStoredVersion(nbt);
-        boolean currentSchema = sourceVersion == NoitaNbtSchema.CURRENT_VERSION;
-        // A v3 parent promises a fully frozen tree. Accepting a v2 descendant
-        // after migrating it in memory would silently reintroduce legacy
-        // defaults below an otherwise strict v3 entity payload.
-        if (currentSchemaAncestor && !currentSchema) {
+        boolean latestSchema = sourceVersion == NoitaNbtSchema.CURRENT_VERSION;
+        boolean frozenSchema = sourceVersion >= 3;
+        // A v3+ parent promises a fully frozen tree. Accepting a v2 descendant
+        // after migrating it in memory would silently reintroduce mutable
+        // defaults below an otherwise strict payload tree.
+        if (frozenSchemaAncestor && !frozenSchema) {
             throw new IllegalArgumentException("current frozen payload tree contains a legacy child");
+        }
+        // A v4 profile is frozen together with its full tree. Do not accept a
+        // nested v3 scalar payload under a newly authored v4 root.
+        if (latestSchemaAncestor && !latestSchema) {
+            throw new IllegalArgumentException("latest frozen payload tree contains an older child");
         }
         if (sourceVersion < 0 || nbt.getSizeInBytes() > NoitaNbtLimits.MAX_PAYLOAD_NBT_BYTES
             || !NoitaNbtSchema.migrateToCurrent(nbt, NoitaNbtSchema.Kind.PROJECTILE_PAYLOAD)
@@ -384,17 +487,21 @@ public record NoitaProjectilePayload(
                 NoitaNbtLimits.MAX_PAYLOAD_NBT_NODES, NoitaNbtLimits.MAX_NBT_LIST_ENTRIES)) {
             throw new IllegalArgumentException("invalid nested frozen projectile payload");
         }
-        if (currentSchema) {
+        if (frozenSchema) {
             requireCurrentPayloadShape(nbt);
         }
         context.enterProjectile(fallbackNodePath);
-        NoitaExecutionIdentity identity = readIdentity(nbt, fallbackNodePath, currentSchema);
+        NoitaExecutionIdentity identity = readIdentity(nbt, fallbackNodePath, frozenSchema);
         context.replaceProjectilePath(fallbackNodePath, identity.nodePath());
         context.bindIdentity(identity);
-        NoitaTriggerPlan triggerPlan = readTriggerPlan(nbt, context, identity.nodePath(), currentPayloadDepth, currentSchema,
-            currentSchemaAncestor || currentSchema);
+        NoitaTriggerPlan triggerPlan = readTriggerPlan(nbt, context, identity.nodePath(), currentPayloadDepth, frozenSchema,
+            frozenSchemaAncestor || frozenSchema, latestSchemaAncestor || latestSchema);
+        DamageProfile damageProfile = readDamageProfile(nbt, frozenSchema);
+        if (latestSchema) {
+            validateDamageMirror(nbt, damageProfile);
+        }
         return new NoitaProjectilePayload(
-            readItemPath(nbt), readBehavior(nbt), finite(nbt, DAMAGE_KEY, 0.0f),
+            readItemPath(nbt), readBehavior(nbt), damageProfile,
             finite(nbt, CRITICAL_CHANCE_PERCENT_KEY, 0.0f), boundedInt(nbt, LIFETIME_TICKS_KEY, 1,
                 NoitaNbtLimits.MAX_PROJECTILE_LIFETIME_TICKS, 60), nonNegative(nbt, TRAIL_LIGHT_STACKS_KEY, 0),
             nonNegativeFloat(nbt, EXPLOSION_RADIUS_KEY, 0.0f), nonNegativeFloat(nbt, SPEED_KEY, 0.0f),
@@ -404,16 +511,16 @@ public record NoitaProjectilePayload(
             nbt.getBoolean(FRIENDLY_FIRE_KEY), nbt.getBoolean(PIERCING_KEY), boundedInt(nbt, PROJECTILE_COUNT_KEY, 1,
                 NoitaNbtLimits.MAX_PROJECTILE_COUNT, 1), nonNegativeFloat(nbt, BURST_SPREAD_DEGREES_KEY, 0.0f),
             nonNegative(nbt, BOUNCE_COUNT_KEY, 0), fromEffectNbtList(nbt.getList(MODIFIER_EFFECTS_KEY, NbtElement.STRING_TYPE)),
-            triggerPlan, identity, readRuntimeBudget(nbt, currentSchema)
+            triggerPlan, identity, readRuntimeBudget(nbt, frozenSchema)
         );
     }
 
     private static NoitaTriggerPlan readTriggerPlan(
-        NbtCompound nbt, DecodeContext context, String ownerNodePath, int ownerPayloadDepth, boolean currentSchema,
-        boolean requireCurrentChildren
+        NbtCompound nbt, DecodeContext context, String ownerNodePath, int ownerPayloadDepth, boolean frozenSchema,
+        boolean requireFrozenChildren, boolean requireLatestChildren
     ) {
         if (!nbt.contains(TRIGGER_PLAN_KEY, NbtElement.COMPOUND_TYPE)) {
-            if (currentSchema) {
+            if (frozenSchema) {
                 throw new IllegalArgumentException("current frozen payload is missing TriggerPlan");
             }
             NoitaSpellTriggerMode mode = readTriggerMode(nbt, TRIGGER_MODE_KEY, NoitaSpellTriggerMode.NONE);
@@ -427,7 +534,7 @@ public record NoitaProjectilePayload(
         }
 
         NbtCompound planNbt = nbt.getCompound(TRIGGER_PLAN_KEY);
-        if (currentSchema) {
+        if (frozenSchema) {
             requireCurrentTriggerPlanShape(planNbt);
         }
         String planPath = readString(planNbt, NODE_PATH_KEY, ownerNodePath + "/trigger");
@@ -450,7 +557,7 @@ public record NoitaProjectilePayload(
         List<NoitaPayloadPlan> payloads = new ArrayList<>(payloadNbt.size());
         for (int index = 0; index < payloadNbt.size(); index++) {
             payloads.add(readPayloadPlan(payloadNbt.getCompound(index), context, planPath + "/" + index, depth,
-                currentSchema, requireCurrentChildren));
+                frozenSchema, requireFrozenChildren, requireLatestChildren));
         }
         return new NoitaTriggerPlan(mode, delay, payloads, planPath, depth, policy);
     }
@@ -463,16 +570,17 @@ public record NoitaProjectilePayload(
         }
         List<NoitaProjectilePayload> payloads = new ArrayList<>(entries.size());
         for (int index = 0; index < entries.size(); index++) {
-            payloads.add(readPayload(entries.getCompound(index), context, basePath + "/" + index, childPayloadDepth, false));
+            payloads.add(readPayload(entries.getCompound(index), context, basePath + "/" + index, childPayloadDepth,
+                false, false));
         }
         return List.copyOf(payloads);
     }
 
     private static NoitaPayloadPlan readPayloadPlan(
-        NbtCompound nbt, DecodeContext context, String fallbackNodePath, int payloadDepth, boolean currentSchema,
-        boolean requireCurrentPayloads
+        NbtCompound nbt, DecodeContext context, String fallbackNodePath, int payloadDepth, boolean frozenSchema,
+        boolean requireFrozenPayloads, boolean requireLatestPayloads
     ) {
-        if (currentSchema) {
+        if (frozenSchema) {
             requireCurrentPayloadPlanShape(nbt);
         }
         String path = readString(nbt, NODE_PATH_KEY, fallbackNodePath);
@@ -484,7 +592,7 @@ public record NoitaProjectilePayload(
         List<NoitaProjectilePayload> projectiles = new ArrayList<>(projectilesNbt.size());
         for (int index = 0; index < projectilesNbt.size(); index++) {
             projectiles.add(readPayload(projectilesNbt.getCompound(index), context, path + "/" + index, payloadDepth,
-                requireCurrentPayloads));
+                requireFrozenPayloads, requireLatestPayloads));
         }
         return new NoitaPayloadPlan(path, projectiles);
     }
@@ -552,9 +660,9 @@ public record NoitaProjectilePayload(
             require(budget, REMAINING_SPAWNED_ENTITIES_KEY, NbtElement.NUMBER_TYPE);
         }
         return new TriggerRuntimeBudget(
-            boundedInt(budget, REMAINING_RELEASE_EVENTS_KEY, 0, TriggerRuntimeBudget.DEFAULT.remainingReleaseEvents(),
+            boundedInt(budget, REMAINING_RELEASE_EVENTS_KEY, 0, TriggerRuntimeBudget.HARD_MAXIMUM,
                 TriggerRuntimeBudget.DEFAULT.remainingReleaseEvents()),
-            boundedInt(budget, REMAINING_SPAWNED_ENTITIES_KEY, 0, TriggerRuntimeBudget.DEFAULT.remainingSpawnedEntities(),
+            boundedInt(budget, REMAINING_SPAWNED_ENTITIES_KEY, 0, TriggerRuntimeBudget.HARD_MAXIMUM,
                 TriggerRuntimeBudget.DEFAULT.remainingSpawnedEntities())
         );
     }
@@ -633,6 +741,24 @@ public record NoitaProjectilePayload(
         return Math.max(0.1f, NoitaNbtSafety.finiteFloat(nbt, key, fallback, 0.1f, Float.MAX_VALUE));
     }
 
+    private static DamageProfile readDamageProfile(NbtCompound nbt, boolean frozenSchema) {
+        if (!nbt.contains(DamageProfileNbtCodec.PROFILE_KEY, NbtElement.COMPOUND_TYPE)) {
+            if (frozenSchema) {
+                throw new IllegalArgumentException("current frozen payload is missing DamageProfile");
+            }
+            return DamageProfile.legacyProjectile(finite(nbt, DAMAGE_KEY, 0.0f));
+        }
+        return DamageProfileNbtCodec.fromNbt(nbt.getCompound(DamageProfileNbtCodec.PROFILE_KEY));
+    }
+
+    private static void validateDamageMirror(NbtCompound nbt, DamageProfile profile) {
+        float mirroredProjectileDamage = nbt.getFloat(DAMAGE_KEY);
+        if (!Float.isFinite(mirroredProjectileDamage)
+            || Float.compare(mirroredProjectileDamage, (float) profile.projectileDamage()) != 0) {
+            throw new IllegalArgumentException("Damage mirror does not match frozen DamageProfile");
+        }
+    }
+
     private static String bounded(String value, String name) {
         if (value == null || value.isBlank() || value.length() > NoitaNbtLimits.MAX_STRING_LENGTH) {
             throw new IllegalArgumentException(name + " must be nonblank and bounded");
@@ -660,10 +786,25 @@ public record NoitaProjectilePayload(
         return Math.max(min, Math.min(max, value));
     }
 
+    private static DamageProfile boundedDamageProfile(DamageProfile profile) {
+        if (profile == null) {
+            throw new IllegalArgumentException("damageProfile must not be null");
+        }
+        EnumMap<DamageChannel, Double> bounded = new EnumMap<>(DamageChannel.class);
+        for (DamageChannel channel : DamageChannel.values()) {
+            double amount = profile.amount(channel);
+            if (amount > 0.0) {
+                bounded.put(channel, Math.min(amount, NoitaNbtLimits.MAX_ABSOLUTE_PROJECTILE_DAMAGE));
+            }
+        }
+        return bounded.isEmpty() ? DamageProfile.EMPTY : new DamageProfile(bounded);
+    }
+
     private static void requireCurrentPayloadShape(NbtCompound nbt) {
         require(nbt, ITEM_PATH_KEY, NbtElement.STRING_TYPE);
         require(nbt, BEHAVIOR_KEY, NbtElement.STRING_TYPE);
         require(nbt, DAMAGE_KEY, NbtElement.NUMBER_TYPE);
+        require(nbt, DamageProfileNbtCodec.PROFILE_KEY, NbtElement.COMPOUND_TYPE);
         require(nbt, CRITICAL_CHANCE_PERCENT_KEY, NbtElement.NUMBER_TYPE);
         require(nbt, LIFETIME_TICKS_KEY, NbtElement.NUMBER_TYPE);
         require(nbt, TRAIL_LIGHT_STACKS_KEY, NbtElement.NUMBER_TYPE);

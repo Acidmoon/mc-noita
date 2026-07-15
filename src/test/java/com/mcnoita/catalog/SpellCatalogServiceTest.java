@@ -90,6 +90,22 @@ class SpellCatalogServiceTest {
         assertSame(before, service.current());
     }
 
+    @Test
+    void removingAnOverrideRestoresItsImmutableBuiltInDefinition() {
+        SpellCatalogService service = initializedService();
+        SpellDefinition builtIn = service.current().catalog().require("mc-noita:alpha");
+        SpellDefinition override = callDefinition("mc-noita:alpha", 99, false);
+
+        assertTrue(service.reload(Map.of(override.id(), override)).changed());
+
+        SpellCatalogService.ReloadResult removed = service.reload(Map.of());
+
+        assertTrue(removed.accepted());
+        assertTrue(removed.changed());
+        assertEquals(2L, removed.snapshot().epoch());
+        assertEquals(builtIn, service.current().catalog().require(builtIn.id()));
+    }
+
     private static SpellCatalogService initializedService() {
         SpellDefinition alpha = callDefinition("mc-noita:alpha", 10, false);
         SpellDefinition beta = new SpellDefinition("mc-noita:beta", SpellCategory.MULTICAST, 5, false, List.of(new DrawAction(2)));

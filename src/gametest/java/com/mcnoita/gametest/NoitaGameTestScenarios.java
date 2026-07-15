@@ -40,6 +40,7 @@ import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import net.minecraft.block.Blocks;
@@ -94,7 +95,10 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         "g02_two_round_real_wand_matches_evaluator",
         "g05_transaction_budget_rejection_preserves_wand",
         "g05_open_editor_rejects_cast",
-        "g05_stale_client_binding_preserves_wand"
+        "g05_stale_client_binding_preserves_wand",
+        "g05_post_reservation_swap_rejects_stale_binding",
+        "g05_healing_bolt_heals_friendly_target",
+        "g05_healing_bolt_rejects_hostile_target"
     );
 
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
@@ -411,18 +415,24 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         });
     }
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20, batchId = "g05_cross_chunk_bomb_isolated")
     public void bombHitTriggerEntityRelease(TestContext context) {
         context.setTime(0);
         ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
-        context.spawnMob(EntityType.ZOMBIE, new Vec3d(6.0, 2.0, 5.5));
+        // Force the swept Bomb ray and entity box over a real chunk seam. The
+        // absolute GameTest grid changes between runs, so derive the seam from
+        // this fixture's origin instead of relying on its local coordinates.
+        Vec3d localOrigin = context.getAbsolute(Vec3d.ZERO);
+        double nextChunkBoundary = Math.floor(localOrigin.x / 16.0) * 16.0 + 16.0;
+        double boundaryLocalX = nextChunkBoundary - localOrigin.x;
+        context.spawnMob(EntityType.ZOMBIE, new Vec3d(boundaryLocalX + 0.75, 2.0, 5.5));
         BombEntity parent = spawnBombHitTrigger(context, player, "root/bomb-entity",
-            new Vec3d(3.4, 2.55, 5.5), new Vec3d(1.4, 0.0, 0.0));
+            new Vec3d(boundaryLocalX - 0.75, 2.55, 5.5), new Vec3d(1.8, 0.0, 0.0));
 
         context.runAtTick(6, () -> {
             context.assertTrue(!parent.isRemoved(), "a fuse bomb must remain alive after an entity Hit trigger collision");
             context.assertTrue(projectilesOwnedBy(context, player) == 1,
-                "a real Bomb entity collision must release exactly one frozen payload; actual="
+                "a cross-chunk Bomb entity collision must release exactly one frozen payload; actual="
                     + projectilesOwnedBy(context, player));
             context.killAllEntities();
             context.complete();
@@ -461,7 +471,7 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
     @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
     public void gammaCallWithoutTargetCharge(TestContext context) { completeFixedFixture(context); }
 
-    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20)
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 20, batchId = "g04_add_trigger_isolated")
     public void g04AddTriggerRealWandReleasesFrozenPayload(TestContext context) {
         context.setTime(0);
         ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
@@ -476,9 +486,13 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         context.assertTrue(projectilesOwnedBy(context, player) == 1,
             "Add Trigger evaluation must spawn one parent before collision");
         context.runAtTick(8, () -> {
-            context.assertTrue(projectilesOwnedBy(context, player) == 1,
+            int projectileCount = projectilesOwnedBy(context, player);
+            NbtCompound remainingProjectileState = firstProjectileOwnedBy(context, player)
+                .map(parent -> parent.writeNbt(new NbtCompound()))
+                .orElse(new NbtCompound());
+            context.assertTrue(projectileCount == 1,
                 "the parent must be replaced by exactly one frozen payload after the real block hit; actual="
-                    + projectilesOwnedBy(context, player));
+                    + projectileCount + "; remainingProjectileState=" + remainingProjectileState);
             context.killAllEntities();
             context.complete();
         });
@@ -632,19 +646,24 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
     public void g05TransactionBudgetRejectionPreservesWand(TestContext context) {
         context.setTime(0);
         ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
-        player.setStackInHand(Hand.MAIN_HAND, configuredThreeBoltWand());
+        player.setStackInHand(Hand.MAIN_HAND, configuredG04Wand(
+            ModItems.ADD_TRIGGER, ModItems.LIGHT_BULLET, ModItems.LIGHT_BULLET
+        ));
         byte[] before = serializedStackNbt(player.getMainHandStack());
         AtomicBoolean executionEntered = new AtomicBoolean();
 
         CastTransaction transaction = new CastTransaction(
-            new WandCastEvaluator(), SpellCatalogService.getInstance(), new SpellBudgetManager(rejectEntityBudget()),
+            new WandCastEvaluator(), SpellCatalogService.getInstance(), new SpellBudgetManager(oneEntityPerCastBudget()),
             (ignoredPlayer, ignoredPlan, ignoredExecutionId, ignoredReservation) -> executionEntered.set(true)
         );
         CastResult result = transaction.cast(player, new CastIntent(Hand.MAIN_HAND, player.getInventory().selectedSlot, 41L));
 
         context.assertTrue(result.status() == CastResult.Status.BUDGET_REJECTED,
-            "an entity quota of zero must reject the prepared Spark Bolt plan before commit");
+            "a root plus frozen Trigger child must fail configured capacity before commit");
         context.assertTrue(result.budgetDiagnostic() != null, "budget rejection must retain a structured diagnostic");
+        context.assertTrue(result.budgetDiagnostic().scope() == com.mcnoita.spell.server.budget.BudgetDiagnostic.Scope.PER_CAST
+                && result.budgetDiagnostic().kind() == BudgetKind.AUTHORITATIVE_ENTITIES,
+            "the Trigger preflight must report its exact per-cast entity ceiling");
         context.assertTrue(!executionEntered.get(), "a rejected transaction must never enter the executor");
         context.assertTrue(Arrays.equals(before, serializedStackNbt(player.getMainHandStack())),
             "budget rejection must preserve the complete wand NBT byte-for-byte");
@@ -708,6 +727,108 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         context.complete();
     }
 
+    /**
+     * Reservation does not authorize a write by itself. A same-tick inventory
+     * update after reservation must win over the staged replacement and force
+     * the first server-observed binding revalidation to reject the cast.
+     */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 5)
+    public void g05PostReservationSwapRejectsStaleBinding(TestContext context) {
+        context.setTime(0);
+        ServerPlayerEntity player = context.createMockCreativeServerPlayerInWorld();
+        int selectedSlot = player.getInventory().selectedSlot;
+        ItemStack originalWand = configuredThreeBoltWand();
+        player.setStackInHand(Hand.MAIN_HAND, originalWand);
+        byte[] originalBefore = serializedStackNbt(originalWand);
+
+        // This models an editor/inventory update that wins the server-thread
+        // turn after evaluate/reserve but before the transaction can commit.
+        ItemStack externallyEditedWand = originalWand.copy();
+        externallyEditedWand.getOrCreateNbt().putString("G05ExternalEdit", "post-reservation");
+        byte[] externalAfterEdit = serializedStackNbt(externallyEditedWand);
+        AtomicBoolean executionEntered = new AtomicBoolean();
+        AtomicBoolean hookEntered = new AtomicBoolean();
+        AtomicBoolean reservationWasActive = new AtomicBoolean();
+        SpellBudgetManager budgetManager = new SpellBudgetManager(BudgetLimits.unlimited());
+
+        CastTransaction transaction = CastTransaction.withPostReservationHookForTesting(
+            new WandCastEvaluator(), SpellCatalogService.getInstance(), budgetManager,
+            (ignoredPlayer, ignoredPlan, ignoredExecutionId, ignoredReservation) -> executionEntered.set(true),
+            () -> {
+                hookEntered.set(true);
+                reservationWasActive.set(budgetManager.activeReservationCount() == 1);
+                player.getInventory().setStack(selectedSlot, externallyEditedWand);
+            }
+        );
+        CastResult result = transaction.cast(player, new CastIntent(Hand.MAIN_HAND, selectedSlot, 45L));
+
+        context.assertTrue(hookEntered.get(), "the fixture must swap the stack after the central reservation");
+        context.assertTrue(reservationWasActive.get(), "the swap hook must observe an active reservation");
+        context.assertTrue(result.status() == CastResult.Status.STALE_BINDING,
+            "a post-reservation stack swap must be rejected before staged wand state is committed");
+        context.assertTrue(!executionEntered.get(), "a stale post-reservation binding must never enter execution");
+        context.assertTrue(Arrays.equals(originalBefore, serializedStackNbt(originalWand)),
+            "the detached original wand must remain byte-identical after stale rejection");
+        context.assertTrue(Arrays.equals(externalAfterEdit, serializedStackNbt(player.getMainHandStack())),
+            "stale rejection must not overwrite the externally edited held wand");
+        context.assertTrue(budgetManager.activeReservationCount() == 0,
+            "stale rejection must close the pre-commit reservation");
+        context.complete();
+    }
+
+    /** A HEAL projectile must use HealingService rather than negative damage and may heal a teammate. */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 12)
+    public void g05HealingBoltHealsFriendlyTarget(TestContext context) {
+        context.setTime(0);
+        ServerPlayerEntity owner = context.createMockCreativeServerPlayerInWorld();
+        owner.setPosition(context.getAbsolute(new Vec3d(2.0, 2.0, 5.5)));
+        ZombieEntity friendly = context.spawnMob(EntityType.ZOMBIE, new Vec3d(7.0, 2.0, 5.5));
+        friendly.setHealth(8.0f);
+        var team = context.getWorld().getScoreboard().addTeam("g05heal");
+        context.getWorld().getScoreboard().addScoreHolderToTeam(owner.getNameForScoreboard(), team);
+        context.getWorld().getScoreboard().addScoreHolderToTeam(friendly.getNameForScoreboard(), team);
+        float healthBefore = friendly.getHealth();
+        SparkBoltProjectileEntity healingBolt = spawnHealingBolt(context, owner, false,
+            new Vec3d(3.4, 2.55, 5.5), new Vec3d(1.4, 0.0, 0.0));
+
+        context.runAtTick(6, () -> {
+            context.assertTrue(healingBolt.isRemoved(),
+                "the healing projectile must actually collide with and terminate at its friendly target");
+            context.assertTrue(friendly.getHealth() > healthBefore,
+                "a wounded teammate must receive server-side healing from a HEAL projectile");
+            context.getWorld().getScoreboard().removeTeam(team);
+            context.killAllEntities();
+            context.complete();
+        });
+    }
+
+    /** The same real collision must not turn a hostile target into an accidental heal target. */
+    @GameTest(templateName = FabricGameTest.EMPTY_STRUCTURE, tickLimit = 12)
+    public void g05HealingBoltRejectsHostileTarget(TestContext context) {
+        context.setTime(0);
+        ServerPlayerEntity owner = context.createMockCreativeServerPlayerInWorld();
+        owner.setPosition(context.getAbsolute(new Vec3d(2.0, 2.0, 5.5)));
+        ZombieEntity hostile = context.spawnMob(EntityType.ZOMBIE, new Vec3d(7.0, 2.0, 5.5));
+        hostile.setHealth(8.0f);
+        // GameTest boxes share one server tick. Damage immunity prevents a
+        // projectile from an adjacent fixture from changing this negative
+        // healing assertion, while LivingEntity.heal still exposes any
+        // erroneous allowNonAllies path in HealingService.
+        hostile.setInvulnerable(true);
+        float healthBefore = hostile.getHealth();
+        SparkBoltProjectileEntity healingBolt = spawnHealingBolt(context, owner, false,
+            new Vec3d(3.4, 2.55, 5.5), new Vec3d(1.4, 0.0, 0.0));
+
+        context.runAtTick(6, () -> {
+            context.assertTrue(healingBolt.isRemoved(),
+                "the healing projectile must actually collide with and terminate at the hostile target");
+            context.assertTrue(hostile.getHealth() == healthBefore,
+                "friendlyFire=false must reject healing an unrelated hostile target");
+            context.killAllEntities();
+            context.complete();
+        });
+    }
+
     private static void completeFixedFixture(TestContext context) {
         context.setTime(0);
         context.runAtTick(20, () -> {
@@ -717,9 +838,9 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         });
     }
 
-    private static BudgetLimits rejectEntityBudget() {
+    private static BudgetLimits oneEntityPerCastBudget() {
         BudgetLimits.ScopeLimits unlimited = BudgetLimits.ScopeLimits.unlimited();
-        return new BudgetLimits(Map.of(BudgetKind.AUTHORITATIVE_ENTITIES, 0L), unlimited, unlimited, unlimited, unlimited, 20L);
+        return new BudgetLimits(Map.of(BudgetKind.AUTHORITATIVE_ENTITIES, 1L), unlimited, unlimited, unlimited, unlimited, 20L);
     }
 
     private static byte[] serializedStackNbt(ItemStack stack) {
@@ -762,6 +883,21 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         projectile.setPosition(context.getAbsolute(position));
         projectile.setVelocity(velocity);
         context.getWorld().spawnEntity(projectile);
+        return projectile;
+    }
+
+    private static SparkBoltProjectileEntity spawnHealingBolt(
+        TestContext context, ServerPlayerEntity owner, boolean friendlyFire, Vec3d position, Vec3d velocity
+    ) {
+        NoitaProjectilePayload payload = new NoitaProjectilePayload(
+            "healing_bolt", NoitaProjectileBehavior.HEAL, 4.0f, 0.0f, 30, 0, 0.0f,
+            1.0f, 0.0f, 0.0f, 0.99f, 0.65f, 1.0f, 0.0f, friendlyFire, false,
+            1, 0.0f, NoitaSpellTriggerMode.NONE, 0, 0, List.of(), List.of()
+        );
+        SparkBoltProjectileEntity projectile = new SparkBoltProjectileEntity(context.getWorld(), owner, payload);
+        projectile.setPosition(context.getAbsolute(position));
+        projectile.setVelocity(velocity);
+        context.assertTrue(context.getWorld().spawnEntity(projectile), "the real HEAL projectile must spawn");
         return projectile;
     }
 
@@ -918,6 +1054,11 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
             entity -> entity.getOwner() == owner).size();
     }
 
+    private static Optional<SparkBoltProjectileEntity> firstProjectileOwnedBy(TestContext context, ServerPlayerEntity owner) {
+        return context.getWorld().getEntitiesByType(ModEntities.SPARK_BOLT_PROJECTILE, context.getTestBox().expand(32.0),
+            entity -> entity.getOwner() == owner).stream().findFirst();
+    }
+
     private static int projectilesForExecution(TestContext context, String executionId) {
         return context.getWorld().getEntitiesByType(ModEntities.SPARK_BOLT_PROJECTILE, context.getTestBox().expand(32.0),
             entity -> executionId.equals(entity.writeNbt(new NbtCompound()).getCompound("FrozenPayload").getString("ExecutionId"))).size();
@@ -926,7 +1067,7 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
     @Test
     @Tag("gametest")
     void fixtureCatalogCoversTheG02WorldScenario() {
-        assertEquals(28, SCENARIOS.size());
+        assertEquals(31, SCENARIOS.size());
         assertTrue(SCENARIOS.contains("starter_wand_server_authority"));
         assertTrue(SCENARIOS.contains("trigger_payload_block_hit_release"));
         assertTrue(SCENARIOS.contains("trigger_payload_entity_hit_release"));
@@ -948,5 +1089,8 @@ public final class NoitaGameTestScenarios implements FabricGameTest {
         assertTrue(SCENARIOS.contains("g05_transaction_budget_rejection_preserves_wand"));
         assertTrue(SCENARIOS.contains("g05_open_editor_rejects_cast"));
         assertTrue(SCENARIOS.contains("g05_stale_client_binding_preserves_wand"));
+        assertTrue(SCENARIOS.contains("g05_post_reservation_swap_rejects_stale_binding"));
+        assertTrue(SCENARIOS.contains("g05_healing_bolt_heals_friendly_target"));
+        assertTrue(SCENARIOS.contains("g05_healing_bolt_rejects_hostile_target"));
     }
 }

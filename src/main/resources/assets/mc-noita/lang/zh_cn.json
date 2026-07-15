@@ -381,5 +381,16 @@
   "tooltip.mc-noita.wand.speed_multiplier": "速度加成: %s倍",
   "tooltip.mc-noita.wand.spells_per_cast": "施放数: %s",
   "tooltip.mc-noita.wand.spread": "散射: %s度",
-  "tooltip.mc-noita.yes": "是"
+  "tooltip.mc-noita.yes": "是",
+  "death.attack.mc_noita_projectile": "%1$s 被诺伊塔投射物击中",
+  "death.attack.mc_noita_explosion": "%1$s 被诺伊塔爆炸吞没",
+  "death.attack.mc_noita_fire": "%1$s 被诺伊塔火焰烧尽",
+  "death.attack.mc_noita_electricity": "%1$s 被诺伊塔魔法电击",
+  "death.attack.mc_noita_drill": "%1$s 被诺伊塔魔法钻穿",
+  "death.attack.mc_noita_slice": "%1$s 被诺伊塔魔法切开",
+  "death.attack.mc_noita_ice": "%1$s 被诺伊塔魔法冻结",
+  "death.attack.mc_noita_toxic": "%1$s 死于诺伊塔毒性魔法",
+  "death.attack.mc_noita_poison": "%1$s 被诺伊塔魔法毒杀",
+  "death.attack.mc_noita_curse": "%1$s 被诺伊塔诅咒吞噬",
+  "death.attack.mc_noita_holy": "%1$s 被神圣的诺伊塔魔法审判"
 }

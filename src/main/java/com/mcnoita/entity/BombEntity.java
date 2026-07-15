@@ -4,6 +4,9 @@ import com.mcnoita.spell.NoitaProjectileBehavior;
 import com.mcnoita.spell.NoitaProjectilePayload;
 import com.mcnoita.spell.NoitaSpellTriggerMode;
 import com.mcnoita.spell.NoitaTriggerPlan;
+import com.mcnoita.spell.damage.DamageChannel;
+import com.mcnoita.spell.damage.DamageProfile;
+import com.mcnoita.spell.damage.SpellDamageService;
 import com.mcnoita.spell.trigger.CollisionKey;
 import com.mcnoita.spell.trigger.ProjectileTerminationCause;
 import com.mcnoita.spell.trigger.ReleaseDecision;
@@ -18,6 +21,8 @@ import com.mcnoita.persistence.NoitaNbtLimits;
 import com.mcnoita.persistence.NoitaNbtSafety;
 import com.mcnoita.persistence.NoitaNbtSchema;
 import com.mcnoita.world.mutation.WorldMutationContext;
+import com.mcnoita.world.mutation.WorldMutationKind;
+import com.mcnoita.world.mutation.WorldMutationPolicy;
 import com.mcnoita.world.mutation.WorldMutationService;
 import com.mcnoita.world.mutation.WorldQueryService;
 import java.util.Collections;
@@ -49,7 +54,6 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
-import net.minecraft.world.RaycastContext;
 import net.minecraft.server.world.ServerWorld;
 import java.util.UUID;
 
@@ -81,6 +85,7 @@ public class BombEntity extends LivingEntity {
     private float gravity = 0.05f;
     private float drag = 0.99f;
     private float renderScale = 1.0f;
+    private boolean friendlyFire;
     private int fuseTicks = 1;
     private LivingEntity caster;
     private UUID casterUuid;
@@ -228,8 +233,12 @@ public class BombEntity extends LivingEntity {
         Vec3d velocity = this.getVelocity();
         Vec3d nextVelocity = new Vec3d(velocity.x * this.drag, velocity.y - this.gravity, velocity.z * this.drag);
         this.setVelocity(nextVelocity);
-        if (!this.getWorld().isClient) {
-            handleMovementCollision(nextVelocity);
+        if (!this.getWorld().isClient && !handleMovementCollision(nextVelocity)) {
+            // A policy-denied ray/query has not proved this path safe. Do not
+            // advance into an unloaded or over-budget chunk without collision
+            // checks, and retry only after the next normal server tick.
+            this.setVelocity(Vec3d.ZERO);
+            return;
         }
         this.move(MovementType.SELF, nextVelocity);
     }
@@ -291,10 +300,10 @@ public class BombEntity extends LivingEntity {
             .withRuntimeBudget(this.triggerPayloadController.state().remainingBudget());
         nbt.put(FROZEN_PAYLOAD_KEY, payload.toNbt());
         nbt.put(TRIGGER_RUNTIME_STATE_KEY, TriggerRuntimeStateNbtCodec.toNbt(this.triggerPayloadController.state()));
-        // v3 always writes an owner marker. The zero UUID is an explicit
+        // v4 always writes an owner marker. The zero UUID is an explicit
         // unowned state, distinct from a missing/corrupt ownership field.
         nbt.putString(OWNER_UUID_KEY, (this.casterUuid == null ? UNOWNED_OWNER_UUID : this.casterUuid).toString());
-        // v3 stores one authoritative tree. Writing the legacy flattened copy
+        // v4 stores one authoritative tree. Writing the legacy flattened copy
         // here could double a legal frozen tree beyond the entity NBT limit.
     }
 
@@ -302,7 +311,9 @@ public class BombEntity extends LivingEntity {
     public void readCustomDataFromNbt(NbtCompound nbt) {
         super.readCustomDataFromNbt(nbt);
         int storedSchemaVersion = NoitaNbtSchema.readStoredVersion(nbt);
-        boolean currentSchema = storedSchemaVersion == NoitaNbtSchema.CURRENT_VERSION;
+        // v3 introduced the frozen tree contract. Preserve that strictness
+        // after a v3 entity is migrated to the v4 damage-profile schema.
+        boolean frozenSchema = storedSchemaVersion >= 3;
         boolean hasFrozenPayload = nbt.contains(FROZEN_PAYLOAD_KEY, NbtElement.COMPOUND_TYPE);
         if (nbt.getSizeInBytes() > NoitaNbtLimits.MAX_ENTITY_NBT_BYTES
             || storedSchemaVersion < 0
@@ -312,7 +323,7 @@ public class BombEntity extends LivingEntity {
             this.discard();
             return;
         }
-        if (currentSchema && !nbt.contains(OWNER_UUID_KEY, NbtElement.STRING_TYPE)) {
+        if (frozenSchema && !nbt.contains(OWNER_UUID_KEY, NbtElement.STRING_TYPE)) {
             this.discard();
             return;
         }
@@ -333,8 +344,8 @@ public class BombEntity extends LivingEntity {
                 return;
             }
         } else {
-            if (currentSchema) {
-                // A v3 Bomb without the full frozen tree must not regain a
+            if (frozenSchema) {
+                // A v3+ Bomb without the full frozen tree must not regain a
                 // fresh budget or reinterpret mutable legacy projection data.
                 this.discard();
                 return;
@@ -358,12 +369,12 @@ public class BombEntity extends LivingEntity {
                 return;
             }
         }
-        if (currentSchema && !nbt.contains(TRIGGER_RUNTIME_STATE_KEY, NbtElement.COMPOUND_TYPE)) {
+        if (frozenSchema && !nbt.contains(TRIGGER_RUNTIME_STATE_KEY, NbtElement.COMPOUND_TYPE)) {
             this.discard();
             return;
         }
         TriggerRuntimeState runtimeState = nbt.contains(TRIGGER_RUNTIME_STATE_KEY, NbtElement.COMPOUND_TYPE)
-            ? (currentSchema
+            ? (frozenSchema
                 ? TriggerRuntimeStateNbtCodec.tryFromCurrentNbt(nbt.getCompound(TRIGGER_RUNTIME_STATE_KEY), payload.runtimeBudget())
                 : TriggerRuntimeStateNbtCodec.tryFromNbt(nbt.getCompound(TRIGGER_RUNTIME_STATE_KEY), payload.runtimeBudget()))
                 .orElse(null)
@@ -424,14 +435,20 @@ public class BombEntity extends LivingEntity {
      * onEntityHit/onCollision callbacks. Detect one swept collision before
      * movement so block and entity Hits share one controller event.
      */
-    private void handleMovementCollision(Vec3d movement) {
-        HitResult collision = findMovementCollision(movement);
+    private boolean handleMovementCollision(Vec3d movement) {
+        CollisionProbe probe = findMovementCollision(movement);
+        if (!probe.admitted()) {
+            activeCollisionSignature = null;
+            return false;
+        }
+        HitResult collision = probe.collision();
         if (collision == null) {
             activeCollisionSignature = null;
-            return;
+            return true;
         }
 
         submitCollision(collisionKey(collision));
+        return true;
     }
 
     private void submitCollision(CollisionKey key) {
@@ -446,32 +463,49 @@ public class BombEntity extends LivingEntity {
         releaseTriggerPayload(TriggerEvent.collision(key));
     }
 
-    private HitResult findMovementCollision(Vec3d movement) {
+    private CollisionProbe findMovementCollision(Vec3d movement) {
         if (movement.lengthSquared() <= 1.0E-8) {
-            return null;
+            return CollisionProbe.admitted(null);
         }
         Vec3d start = this.getPos();
         Vec3d end = start.add(movement);
-        BlockHitResult blockHit = this.getWorld().raycast(new RaycastContext(start, end,
-            RaycastContext.ShapeType.COLLIDER, RaycastContext.FluidHandling.NONE, this));
-        EntityHitResult entityHit = findEntityCollision(start, end, movement);
+        // A denied ray must also suppress entity collision for this movement.
+        // Otherwise an unloaded/over-budget block path could still release a
+        // Hit payload through the separate entity query below.
+        Optional<BlockHitResult> blockProbe = mutationContext()
+            .flatMap(context -> WorldQueryService.raycast(context, this, start, end));
+        if (blockProbe.isEmpty()) {
+            return CollisionProbe.denied();
+        }
+        CollisionProbe entityProbe = findEntityCollision(start, end, movement);
+        if (!entityProbe.admitted()) {
+            return CollisionProbe.denied();
+        }
+        BlockHitResult blockHit = blockProbe.get();
+        EntityHitResult entityHit = entityProbe.collision() instanceof EntityHitResult hit ? hit : null;
 
         if (entityHit == null) {
-            return blockHit.getType() == HitResult.Type.BLOCK ? blockHit : null;
+            return CollisionProbe.admitted(blockHit.getType() == HitResult.Type.BLOCK ? blockHit : null);
         }
         if (blockHit.getType() != HitResult.Type.BLOCK
             || entityHit.getPos().squaredDistanceTo(start) <= blockHit.getPos().squaredDistanceTo(start)) {
-            return entityHit;
+            return CollisionProbe.admitted(entityHit);
         }
-        return blockHit;
+        return CollisionProbe.admitted(blockHit);
     }
 
-    private EntityHitResult findEntityCollision(Vec3d start, Vec3d end, Vec3d movement) {
+    private CollisionProbe findEntityCollision(Vec3d start, Vec3d end, Vec3d movement) {
         Box sweptBox = this.getBoundingBox().stretch(movement).expand(0.3);
+        Optional<List<Entity>> candidates = mutationContext().flatMap(context -> WorldQueryService.tryEntities(
+            context, this, sweptBox, this::isValidCollisionEntity, WorldMutationPolicy.MAX_QUERY_RESULTS
+        ));
+        if (candidates.isEmpty()) {
+            return CollisionProbe.denied();
+        }
         Entity closest = null;
         Vec3d closestHit = null;
         double closestDistance = Double.MAX_VALUE;
-        for (Entity candidate : queryEntities(sweptBox, this::isValidCollisionEntity)) {
+        for (Entity candidate : candidates.get()) {
             Vec3d hit = candidate.getBoundingBox().expand(0.3).raycast(start, end).orElse(null);
             if (hit == null) {
                 continue;
@@ -483,12 +517,23 @@ public class BombEntity extends LivingEntity {
                 closestDistance = distance;
             }
         }
-        return closest == null ? null : new EntityHitResult(closest, closestHit);
+        return CollisionProbe.admitted(closest == null ? null : new EntityHitResult(closest, closestHit));
     }
 
     private boolean isValidCollisionEntity(Entity candidate) {
         return candidate != this && !candidate.isRemoved() && candidate.isAlive() && !candidate.isSpectator()
             && candidate != getCaster();
+    }
+
+    /** Distinguishes a legal miss from a policy-denied collision probe. */
+    private record CollisionProbe(boolean admitted, HitResult collision) {
+        private static CollisionProbe admitted(HitResult collision) {
+            return new CollisionProbe(true, collision);
+        }
+
+        private static CollisionProbe denied() {
+            return new CollisionProbe(false, null);
+        }
     }
 
     private CollisionKey collisionKey(HitResult hitResult) {
@@ -518,7 +563,7 @@ public class BombEntity extends LivingEntity {
         this.activeCollisionSignature = runtimeState.latestCollision() == null ? null : collisionSignature(runtimeState.latestCollision());
     }
 
-    /** Legacy dynamic spawns acquire one server identity before they can be persisted as v3. */
+    /** Legacy dynamic spawns acquire one server identity before they can be persisted as v4. */
     private NoitaProjectilePayload bindLegacyRuntimeIdentity(NoitaProjectilePayload payload) {
         if (payload.executionIdentity().isBound() || this.getWorld().isClient) {
             return payload;
@@ -526,7 +571,7 @@ public class BombEntity extends LivingEntity {
         return payload.withTreeIdentity(UUID.randomUUID(), 0L, LEGACY_RUNTIME_CATALOG_HASH);
     }
 
-    /** v3 keeps top-level fields only as diagnostics; frozen payload mechanics are authoritative after reload. */
+    /** v4 keeps top-level fields only as diagnostics; frozen payload mechanics are authoritative after reload. */
     private void applyFrozenPayloadMechanics(NoitaProjectilePayload payload) {
         this.itemPath = payload.itemPath();
         this.behavior = payload.behavior();
@@ -534,6 +579,7 @@ public class BombEntity extends LivingEntity {
         this.gravity = payload.gravity();
         this.drag = payload.drag();
         this.renderScale = payload.renderScale();
+        this.friendlyFire = payload.friendlyFire();
         this.fuseTicks = getInitialFuseTicks(this.itemPath, payload.lifetimeTicks());
     }
 
@@ -543,7 +589,7 @@ public class BombEntity extends LivingEntity {
         }
         return new NoitaProjectilePayload(this.itemPath, this.behavior, 0.0f, 0.0f, Math.max(1, this.fuseTicks),
             0, this.explosionRadius, (float) this.getVelocity().length(), 0.0f, this.gravity, this.drag, 0.99f,
-            this.renderScale, 0.0f, false, false, 1, 0.0f, this.triggerPlan.mode(),
+            this.renderScale, 0.0f, this.friendlyFire, false, 1, 0.0f, this.triggerPlan.mode(),
             this.triggerPlan.timerDelayTicks(), 0, List.of(),
             this.triggerPlan.payloads().stream().flatMap(payload -> payload.projectiles().stream()).toList());
     }
@@ -554,7 +600,10 @@ public class BombEntity extends LivingEntity {
     }
 
     private boolean mutateExplosion(Vec3d center, float radius, boolean fire) {
-        return mutationContext().map(context -> WorldMutationService.explode(context, this, center, radius, fire)).orElse(false);
+        NoitaProjectilePayload payload = currentFrozenPayload();
+        DamageProfile profile = DamageProfile.of(DamageChannel.EXPLOSION, payload.damageProfile().totalDamage());
+        return mutationContext().map(context -> WorldMutationService.explode(context, this, getCaster(), center, radius,
+            profile, this.friendlyFire, fire, true)).orElse(false);
     }
 
     private boolean mutateBreak(BlockPos pos, boolean drop) {
@@ -567,6 +616,25 @@ public class BombEntity extends LivingEntity {
 
     private List<Entity> queryEntities(Box area, Predicate<? super Entity> predicate) {
         return mutationContext().map(context -> WorldQueryService.entities(context, this, area, predicate, 128)).orElse(List.of());
+    }
+
+    /** World reads must not load chunks or escape the projectile's frozen dimension binding. */
+    private Optional<BlockState> queryBlockState(BlockPos pos) {
+        return mutationContext().flatMap(context -> WorldQueryService.blockState(context, pos, WorldMutationKind.BLOCK_CHECK));
+    }
+
+    /**
+     * Bomb aftermath is hostile by default. A missing, dead, removed, or
+     * dimension-mismatched owner cannot use delayed status effects to bypass
+     * the same self/team policy applied to direct spell damage.
+     */
+    private boolean canHarmTarget(Entity target) {
+        LivingEntity resolvedCaster = getCaster();
+        if (this.casterUuid == null || resolvedCaster == null || resolvedCaster.isRemoved()
+            || !resolvedCaster.isAlive() || resolvedCaster.getWorld() != this.getWorld()) {
+            return false;
+        }
+        return SpellDamageService.isTargetAllowed(target, resolvedCaster, this.friendlyFire);
     }
 
     private Vec3d getPayloadDirection() {
@@ -606,11 +674,17 @@ public class BombEntity extends LivingEntity {
     private void igniteAround(World world, int radius, int seconds) {
         Box area = this.getBoundingBox().expand(radius);
         for (Entity entity : queryEntities(area, entity -> entity instanceof LivingEntity)) {
-            entity.setOnFireFor(seconds);
+            if (canHarmTarget(entity)) {
+                entity.setOnFireFor(seconds);
+            }
         }
         BlockPos center = this.getBlockPos();
         for (BlockPos pos : BlockPos.iterate(center.add(-radius, -1, -radius), center.add(radius, 1, radius))) {
-            if (this.random.nextInt(4) != 0 || !world.getBlockState(pos).isAir()) {
+            if (this.random.nextInt(4) != 0) {
+                continue;
+            }
+            Optional<BlockState> currentState = queryBlockState(pos);
+            if (currentState.isEmpty() || !currentState.get().isAir()) {
                 continue;
             }
             BlockState fire = AbstractFireBlock.getState(world, pos);
@@ -623,14 +697,16 @@ public class BombEntity extends LivingEntity {
     private void freezeNearby(int radius) {
         Box area = this.getBoundingBox().expand(radius);
         for (Entity entity : queryEntities(area, entity -> entity instanceof LivingEntity)) {
-            entity.setFrozenTicks(Math.max(entity.getFrozenTicks(), 180));
+            if (canHarmTarget(entity)) {
+                entity.setFrozenTicks(Math.max(entity.getFrozenTicks(), 180));
+            }
         }
     }
 
     private void holyFlash(double radius) {
         Box area = this.getBoundingBox().expand(radius);
         for (Entity entity : queryEntities(area, entity -> entity instanceof LivingEntity)) {
-            if (entity instanceof LivingEntity living) {
+            if (entity instanceof LivingEntity living && canHarmTarget(entity)) {
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.BLINDNESS, 80, 0), this);
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.WEAKNESS, 120, 1), this);
             }
@@ -640,7 +716,7 @@ public class BombEntity extends LivingEntity {
     private void poisonNearby(double radius) {
         Box area = this.getBoundingBox().expand(radius);
         for (Entity entity : queryEntities(area, entity -> entity instanceof LivingEntity)) {
-            if (entity instanceof LivingEntity living) {
+            if (entity instanceof LivingEntity living && canHarmTarget(entity)) {
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.POISON, 160, 1), this);
                 living.addStatusEffect(new StatusEffectInstance(StatusEffects.NAUSEA, 120, 0), this);
             }
@@ -654,9 +730,12 @@ public class BombEntity extends LivingEntity {
             if (pos.getSquaredDistance(center) > radiusSquared) {
                 continue;
             }
-            BlockState state = world.getBlockState(pos);
-            float hardness = state.getHardness(world, pos);
-            if (!state.isAir() && hardness >= 0.0f && hardness <= 20.0f && this.random.nextInt(3) != 0) {
+            Optional<BlockState> state = queryBlockState(pos);
+            if (state.isEmpty()) {
+                continue;
+            }
+            float hardness = state.get().getHardness(world, pos);
+            if (!state.get().isAir() && hardness >= 0.0f && hardness <= 20.0f && this.random.nextInt(3) != 0) {
                 mutateBreak(pos, false);
             }
         }
@@ -665,10 +744,15 @@ public class BombEntity extends LivingEntity {
     private void placeGlowstoneRing(World world, int radius) {
         BlockPos center = this.getBlockPos();
         for (BlockPos pos : BlockPos.iterate(center.add(-radius, -1, -radius), center.add(radius, 1, radius))) {
-            if (this.random.nextInt(5) != 0 || !world.getBlockState(pos).isAir()) {
+            if (this.random.nextInt(5) != 0) {
                 continue;
             }
-            if (world.getBlockState(pos.down()).isSideSolidFullSquare(world, pos.down(), Direction.UP)) {
+            Optional<BlockState> currentState = queryBlockState(pos);
+            Optional<BlockState> supportState = queryBlockState(pos.down());
+            if (currentState.isEmpty() || supportState.isEmpty() || !currentState.get().isAir()) {
+                continue;
+            }
+            if (supportState.get().isSideSolidFullSquare(world, pos.down(), Direction.UP)) {
                 mutateReplace(pos, Blocks.GLOWSTONE.getDefaultState(), 11);
             }
         }
@@ -677,10 +761,15 @@ public class BombEntity extends LivingEntity {
     private void scatterTntMaterial(World world, int radius) {
         BlockPos center = this.getBlockPos();
         for (BlockPos pos : BlockPos.iterate(center.add(-radius, 0, -radius), center.add(radius, 1, radius))) {
-            if (this.random.nextInt(6) != 0 || !world.getBlockState(pos).isAir()) {
+            if (this.random.nextInt(6) != 0) {
                 continue;
             }
-            if (world.getBlockState(pos.down()).isSideSolidFullSquare(world, pos.down(), Direction.UP)) {
+            Optional<BlockState> currentState = queryBlockState(pos);
+            Optional<BlockState> supportState = queryBlockState(pos.down());
+            if (currentState.isEmpty() || supportState.isEmpty() || !currentState.get().isAir()) {
+                continue;
+            }
+            if (supportState.get().isSideSolidFullSquare(world, pos.down(), Direction.UP)) {
                 mutateReplace(pos, Blocks.TNT.getDefaultState(), 11);
             }
         }

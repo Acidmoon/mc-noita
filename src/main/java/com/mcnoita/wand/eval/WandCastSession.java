@@ -27,6 +27,7 @@ import com.mcnoita.spell.plan.EffectPlan;
 import com.mcnoita.spell.plan.PayloadPlan;
 import com.mcnoita.spell.plan.ProjectileDefinition;
 import com.mcnoita.spell.plan.ProjectilePlan;
+import com.mcnoita.spell.damage.DamageProfile;
 import com.mcnoita.spell.plan.RecoilPlan;
 import com.mcnoita.spell.plan.ResolvedCast;
 import com.mcnoita.spell.plan.ShotModifier;
@@ -1072,7 +1073,7 @@ public final class WandCastSession {
             effects.addAll(finalShot.effects());
             requireModifierEffectCapacity(effects.size());
             plans.add(new ProjectilePlan(projectile.nodePath, source.itemPath(), source.behavior(),
-                Math.max(0.0, source.damage() + finalShot.damage()),
+                DamageProfile.legacyProjectile(Math.max(0.0, source.damage() + finalShot.damage())),
                 source.criticalChancePercent() + finalShot.criticalChancePercent(),
                 NoitaDuration.frames(Math.max(1.0, source.lifetime().frames() + finalShot.lifetimeFrames())),
                 source.trailLightStacks() + finalShot.trailLightStacks(),

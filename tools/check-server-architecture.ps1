@@ -20,7 +20,9 @@ $worldMutationPatterns = @(
     '\.setBlockState\(',
     '\.spawnEntity\(',
     '\.getOtherEntities\(',
-    'FallingBlockEntity\.spawnFromBlock\('
+    '(?:\bworld|this\.getWorld\(\))\.raycast\(',
+    'FallingBlockEntity\.spawnFromBlock\(',
+    '\.requestTeleport\('
 )
 Get-ChildItem -File $entityRoot -Filter "*.java" | ForEach-Object {
     $fileName = $_.Name
@@ -37,4 +39,65 @@ Get-ChildItem -File $entityRoot -Filter "*.java" | ForEach-Object {
 
 if ($worldBypasses.Count -gt 0) {
     throw "Spell entity bypasses WorldMutationService/WorldQueryService: $($worldBypasses -join ', ')"
+}
+
+# Bomb aftermath and the temporary-light manager both perform bounded block
+# inspection as well as writes. Keep their reads behind WorldQueryService so
+# an innocent-looking range loop cannot inspect or load an arbitrary chunk.
+$scopedWorldPolicySources = @(
+    (Join-Path $entityRoot "BombEntity.java"),
+    (Join-Path $ProjectRoot "src/main/java/com/mcnoita/world/NoitaTemporaryLightManager.java")
+)
+$worldReadBypasses = @()
+foreach ($sourcePath in $scopedWorldPolicySources) {
+    if (-not (Test-Path -LiteralPath $sourcePath)) {
+        throw "Expected world-policy source is missing: $sourcePath"
+    }
+    $fileName = Split-Path -Leaf $sourcePath
+    $lineNumber = 0
+    Get-Content -LiteralPath $sourcePath | ForEach-Object {
+        $lineNumber++
+        $line = $_
+        if ($line -match '\.getBlockState\(' -and
+            $line -notmatch 'WorldMutationService\.' -and $line -notmatch 'WorldQueryService\.') {
+            $worldReadBypasses += "{0}:{1}" -f $fileName, $lineNumber
+        }
+        if ($line -match '\.setBlockState\(' -and
+            $line -notmatch 'WorldMutationService\.') {
+            $worldReadBypasses += "{0}:{1}" -f $fileName, $lineNumber
+        }
+    }
+}
+
+if ($worldReadBypasses.Count -gt 0) {
+    throw "Scoped spell world code bypasses WorldMutationService/WorldQueryService: $($worldReadBypasses -join ', ')"
+}
+
+# Damage and healing follow the same boundary rule. Entity implementations may
+# choose a frozen profile or a legacy projectile projection, but only the
+# services create DamageSource instances, reset Noita-style hurt immunity, or
+# apply the owner/team policy.
+$damageBypasses = @()
+$damagePatterns = @(
+    'NoitaSpellDamage\.apply\(',
+    '\.indirectMagic\(',
+    '\.heal\(',
+    '\.damage\('
+)
+Get-ChildItem -File $entityRoot -Filter "*.java" | ForEach-Object {
+    $fileName = $_.Name
+    $lineNumber = 0
+    Get-Content -LiteralPath $_.FullName | ForEach-Object {
+        $lineNumber++
+        $line = $_
+        if (($damagePatterns | Where-Object { $line -match $_ }).Count -gt 0 -and
+            $line -notmatch 'SpellDamageService\.' -and $line -notmatch 'HealingService\.heal\(' -and
+            $line -notmatch '\b(?:payload|plan|profile)\.damage\(') {
+            $damageBypasses += "{0}:{1}" -f $fileName, $lineNumber
+        }
+    }
+}
+
+if ($damageBypasses.Count -gt 0) {
+    throw "Spell entity bypasses SpellDamageService/HealingService: $($damageBypasses -join ', ')"
 }

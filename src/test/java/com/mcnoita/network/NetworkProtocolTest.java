@@ -2,6 +2,7 @@ package com.mcnoita.network;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.UUID;
@@ -54,6 +55,34 @@ class NetworkProtocolTest {
         PacketByteBuf hud = PacketByteBufs.create();
         expected.write(hud);
         assertEquals(expected, WandCastHudSnapshot.read(hud).orElseThrow());
+    }
+
+    @Test
+    void castRequestsRejectHandSlotCombinationsThatCannotNameAHeldWand() {
+        assertThrows(IllegalArgumentException.class, () -> new WandCastRequest(
+            NoitaNetworkProtocol.VERSION, 1, Hand.MAIN_HAND, -1, 0, 0L, 0L, CATALOG_HASH
+        ));
+        assertThrows(IllegalArgumentException.class, () -> new WandCastRequest(
+            NoitaNetworkProtocol.VERSION, 1, Hand.OFF_HAND, 0, 0, 0L, 0L, CATALOG_HASH
+        ));
+    }
+
+    @Test
+    void receiverPreflightRejectsWrongProtocolHandAndSelectedSlotBeforeRateLimiting() {
+        WandCastRequest valid = new WandCastRequest(
+            NoitaNetworkProtocol.VERSION, 1, Hand.MAIN_HAND, 3, 0, 0L, 0L, CATALOG_HASH
+        );
+        WandCastRequest oldProtocol = new WandCastRequest(
+            NoitaNetworkProtocol.VERSION - 1, 1, Hand.MAIN_HAND, 3, 0, 0L, 0L, CATALOG_HASH
+        );
+        WandCastRequest offHand = new WandCastRequest(
+            NoitaNetworkProtocol.VERSION, 1, Hand.OFF_HAND, -1, 0, 0L, 0L, CATALOG_HASH
+        );
+
+        assertTrue(ModNetworking.isValidCastEnvelope(valid, 3));
+        assertFalse(ModNetworking.isValidCastEnvelope(valid, 4));
+        assertFalse(ModNetworking.isValidCastEnvelope(oldProtocol, 3));
+        assertFalse(ModNetworking.isValidCastEnvelope(offHand, 3));
     }
 
     @Test

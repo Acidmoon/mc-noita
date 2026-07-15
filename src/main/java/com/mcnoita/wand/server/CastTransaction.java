@@ -5,21 +5,28 @@ import com.mcnoita.catalog.CatalogSnapshot;
 import com.mcnoita.catalog.SpellCatalogService;
 import com.mcnoita.item.NoitaWandItem;
 import com.mcnoita.network.NoitaNetworkProtocol;
+import com.mcnoita.spell.exec.EffectExecutionContext;
 import com.mcnoita.spell.exec.MinecraftEffectExecutor;
 import com.mcnoita.spell.plan.ResolvedCast;
-import com.mcnoita.spell.server.budget.BudgetLimits;
+import com.mcnoita.spell.server.budget.BudgetDiagnostic;
+import com.mcnoita.spell.server.budget.BudgetKind;
+import com.mcnoita.spell.server.budget.BudgetRequest;
 import com.mcnoita.spell.server.budget.BudgetReservation;
 import com.mcnoita.spell.server.budget.ChunkBudgetKey;
 import com.mcnoita.spell.server.budget.SpellBudgetManager;
+import com.mcnoita.spell.server.job.SpellJobServerService;
+import com.mcnoita.spell.trigger.RootTriggerBudgetAllocator;
 import com.mcnoita.wand.adapter.MinecraftExternalSpellPoolAdapter;
 import com.mcnoita.wand.adapter.MinecraftWandAdapter;
 import com.mcnoita.wand.eval.WandCastEvaluator;
+import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.Hand;
+import net.minecraft.util.math.Vec3d;
 
 /**
  * The only server-side bridge from a cast intent to a committed EffectPlan. All
@@ -27,10 +34,14 @@ import net.minecraft.util.Hand;
  * player's actual wand and every external hotbar wand byte-for-byte untouched.
  */
 public final class CastTransaction {
+    private static final Runnable NO_POST_RESERVATION_HOOK = () -> {
+    };
+
     private final WandCastEvaluator evaluator;
     private final SpellCatalogService catalogService;
     private final SpellBudgetManager budgetManager;
     private final ExecutionSink executionSink;
+    private final Runnable postReservationHook;
 
     public CastTransaction(
         WandCastEvaluator evaluator,
@@ -38,15 +49,66 @@ public final class CastTransaction {
         SpellBudgetManager budgetManager,
         ExecutionSink executionSink
     ) {
+        this(evaluator, catalogService, budgetManager, executionSink, NO_POST_RESERVATION_HOOK);
+    }
+
+    private CastTransaction(
+        WandCastEvaluator evaluator,
+        SpellCatalogService catalogService,
+        SpellBudgetManager budgetManager,
+        ExecutionSink executionSink,
+        Runnable postReservationHook
+    ) {
         this.evaluator = Objects.requireNonNull(evaluator, "evaluator");
         this.catalogService = Objects.requireNonNull(catalogService, "catalogService");
         this.budgetManager = Objects.requireNonNull(budgetManager, "budgetManager");
         this.executionSink = Objects.requireNonNull(executionSink, "executionSink");
+        this.postReservationHook = Objects.requireNonNull(postReservationHook, "postReservationHook");
     }
 
     public static CastTransaction createProduction() {
         return new CastTransaction(new WandCastEvaluator(), SpellCatalogService.getInstance(),
-            new SpellBudgetManager(BudgetLimits.DEFAULT), MinecraftEffectExecutor::execute);
+            SpellJobServerService.getInstance().budgetManager(), new ExecutionSink() {
+                @Override
+                public void execute(
+                    ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation
+                ) {
+                    MinecraftEffectExecutor.execute(player, resolvedCast, executionId, reservation);
+                }
+
+                @Override
+                public void execute(
+                    ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation,
+                    Map<String, ChunkBudgetKey> synchronousNodeChunks
+                ) {
+                    MinecraftEffectExecutor.execute(player, resolvedCast, executionId, reservation, synchronousNodeChunks);
+                }
+
+                @Override
+                public void execute(
+                    ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation,
+                    Map<String, ChunkBudgetKey> synchronousNodeChunks,
+                    Map<String, java.util.Set<ChunkBudgetKey>> synchronousEntityQueryChunks
+                ) {
+                    MinecraftEffectExecutor.execute(player, resolvedCast, executionId, reservation, synchronousNodeChunks,
+                        synchronousEntityQueryChunks);
+                }
+            });
+    }
+
+    /**
+     * Creates an integration-test transaction with a deterministic pause after
+     * a successful reservation and before the first binding revalidation.
+     * Production construction always installs the no-op hook above.
+     */
+    public static CastTransaction withPostReservationHookForTesting(
+        WandCastEvaluator evaluator,
+        SpellCatalogService catalogService,
+        SpellBudgetManager budgetManager,
+        ExecutionSink executionSink,
+        Runnable postReservationHook
+    ) {
+        return new CastTransaction(evaluator, catalogService, budgetManager, executionSink, postReservationHook);
     }
 
     public CastResult cast(ServerPlayerEntity player, CastIntent intent) {
@@ -56,7 +118,11 @@ public final class CastTransaction {
             return rejected(CastResult.Status.VALIDATION_REJECTED, "player is not eligible to cast", null, null, null);
         }
 
+        // Wand cooldowns intentionally use world time, while the shared budget
+        // ledger must use the monotonic server tick also used by jobs/runtime
+        // world operations. A `/time set` must never move that ledger backward.
         long now = player.getServerWorld().getTime();
+        long budgetTick = player.getServer().getTicks();
         ItemStack source = sourceStack(player, intent);
         if (source == null || source.isEmpty() || !(source.getItem() instanceof NoitaWandItem wandItem)) {
             return rejected(CastResult.Status.VALIDATION_REJECTED, "held slot no longer contains a castable wand", null, null, null);
@@ -95,16 +161,51 @@ public final class CastTransaction {
             return rejected(CastResult.Status.EVALUATION_REJECTED, "pure evaluator rejected the cast", binding, executionId, null);
         }
 
+        // The root executor must never discover a configured Trigger-tree
+        // ceiling after WandState commit. Descendant world admission remains
+        // runtime-charged, but their frozen local partition is preflighted
+        // against the same immutable per-cast limits as the reservation.
+        RootTriggerBudgetAllocator.Allocation rootBudgetAllocation = RootTriggerBudgetAllocator.allocate(
+            resolved.effectPlan().nodes(), budgetManager.triggerRuntimeBudgetCeiling()
+        );
+        if (!rootBudgetAllocation.accepted()) {
+            return rejected(CastResult.Status.BUDGET_REJECTED, "trigger runtime budget preflight was rejected", binding,
+                executionId, rootBudgetDiagnostic(player, executionId, rootBudgetAllocation));
+        }
+
         ChunkBudgetKey originChunk = new ChunkBudgetKey(snapshotDimension(player), player.getChunkPos().x, player.getChunkPos().z);
+        Vec3d spawnPosition = EffectExecutionContext.spellSpawnPosition(player);
+        PlanBudgetRequestFactory.SynchronousNodeBindings synchronousNodeBindings;
+        BudgetRequest planBudget;
+        try {
+            synchronousNodeBindings = PlanBudgetRequestFactory.synchronousNodeBindings(originChunk.dimensionId(), originChunk,
+                resolved, player.getPos(), spawnPosition, player.getRotationVec(1.0f));
+            planBudget = PlanBudgetRequestFactory.fromResolvedCast(executionId, player.getUuid(), originChunk.dimensionId(),
+                originChunk, resolved, synchronousNodeBindings);
+        } catch (IllegalArgumentException invalidPlan) {
+            // This boundary remains before reservation, replacement-NBT write,
+            // or WandState commit. A plan with multiple retained job nodes is
+            // unsupported until it has distinct durable job identities.
+            return rejected(CastResult.Status.EVALUATION_REJECTED, "effect plan cannot be committed safely", binding,
+                executionId, null);
+        }
         PreparedCast prepared = new PreparedCast(intent, binding, snapshot, loaded, resolved, replacement, executionId,
-            PlanBudgetRequestFactory.fromResolvedCast(executionId, player.getUuid(), originChunk.dimensionId(), originChunk, resolved), now);
-        SpellBudgetManager.ReservationAttempt attempt = budgetManager.reserve(prepared.budgetRequest(), now);
+            planBudget, budgetTick);
+        SpellBudgetManager.ReservationAttempt attempt = budgetManager.reserve(prepared.budgetRequest(), budgetTick);
         if (!attempt.accepted()) {
             return rejected(CastResult.Status.BUDGET_REJECTED, "central budget reservation was rejected", binding, executionId,
                 attempt.diagnostic());
         }
 
         BudgetReservation reservation = attempt.reservation();
+        try {
+            postReservationHook.run();
+        } catch (RuntimeException | Error hookFailure) {
+            // Test-only hooks must not leak an accepted reservation when a
+            // fixture assertion fails before the normal stale-binding cleanup.
+            reservation.close();
+            throw hookFailure;
+        }
         if (!matchesCurrentBinding(player, intent, binding, now)) {
             reservation.close();
             return rejected(CastResult.Status.STALE_BINDING, "wand or catalog changed before commit", binding, executionId, null);
@@ -135,7 +236,8 @@ public final class CastTransaction {
 
         CommittedCast committed = new CommittedCast(prepared, reservation);
         try {
-            executionSink.execute(player, prepared.resolvedCast(), executionId, reservation);
+            executionSink.execute(player, prepared.resolvedCast(), executionId, reservation, synchronousNodeBindings.primaryChunks(),
+                synchronousNodeBindings.entityQueryChunks());
         } catch (RuntimeException executionFailure) {
             // Wand state stays committed after any executor failure. Node-level
             // executors already isolate failures; this covers setup failures too.
@@ -231,6 +333,16 @@ public final class CastTransaction {
         return player.getServerWorld().getRegistryKey().getValue().toString();
     }
 
+    private static BudgetDiagnostic rootBudgetDiagnostic(
+        ServerPlayerEntity player, UUID executionId, RootTriggerBudgetAllocator.Allocation allocation
+    ) {
+        BudgetKind kind = allocation.rejection() == RootTriggerBudgetAllocator.Rejection.TRIGGER_RELEASES
+            ? BudgetKind.TRIGGER_RELEASES : BudgetKind.AUTHORITATIVE_ENTITIES;
+        return new BudgetDiagnostic(BudgetDiagnostic.Code.LIMIT_EXCEEDED, BudgetDiagnostic.Scope.PER_CAST, kind,
+            executionId, player.getUuid(), snapshotDimension(player), null, allocation.requested(), 0L, allocation.limit(),
+            "frozen root Trigger tree exceeds the configured per-cast " + kind + " ceiling");
+    }
+
     private static CastResult rejected(
         CastResult.Status status, String reason, CastBinding binding, UUID executionId,
         com.mcnoita.spell.server.budget.BudgetDiagnostic budgetDiagnostic
@@ -241,5 +353,22 @@ public final class CastTransaction {
     @FunctionalInterface
     public interface ExecutionSink {
         void execute(ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation);
+
+        /** Production execution receives commit-time target chunks; test sinks may ignore them. */
+        default void execute(
+            ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation,
+            Map<String, ChunkBudgetKey> synchronousNodeChunks
+        ) {
+            execute(player, resolvedCast, executionId, reservation);
+        }
+
+        /** Test sinks may ignore geometry, while production must preserve the pre-commit query coverage. */
+        default void execute(
+            ServerPlayerEntity player, ResolvedCast resolvedCast, UUID executionId, BudgetReservation reservation,
+            Map<String, ChunkBudgetKey> synchronousNodeChunks,
+            Map<String, java.util.Set<ChunkBudgetKey>> synchronousEntityQueryChunks
+        ) {
+            execute(player, resolvedCast, executionId, reservation, synchronousNodeChunks);
+        }
     }
 }

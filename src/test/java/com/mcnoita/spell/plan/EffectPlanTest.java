@@ -4,8 +4,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
+import com.mcnoita.spell.damage.DamageChannel;
+import com.mcnoita.spell.damage.DamageProfile;
 import com.mcnoita.wand.model.NoitaDuration;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +50,20 @@ class EffectPlanTest {
             new ExplosionEffectNode("root/shared", 1.0, 1.0, false),
             new FieldEffectNode("root/shared", FieldEffectNode.FieldKind.GENERIC, 1.0, NoitaDuration.frames(30))
         )));
+    }
+
+    @Test
+    void projectilePlanKeepsFullDamageProfileWhileLegacyScalarStaysProjectileOnly() {
+        ProjectilePlan profilePlan = new ProjectilePlan("root/projectile/profile", "spark_bolt", "BOLT",
+            new DamageProfile(Map.of(DamageChannel.PROJECTILE, 2.0, DamageChannel.FIRE, 1.0)),
+            0.0, NoitaDuration.frames(60), 0, 0.0, 400.0, 0.0, 0.0, 0.99, 0.65, 1.0, 0.0,
+            false, false, 1, 0.0, null, 0, List.of());
+        ProjectilePlan legacyPlan = projectile("root/projectile/legacy");
+
+        assertEquals(1.0, profilePlan.damageProfile().amount(DamageChannel.FIRE));
+        assertEquals(2.0, profilePlan.damage());
+        assertEquals(1.0, legacyPlan.damageProfile().amount(DamageChannel.PROJECTILE));
+        assertEquals(0.0, legacyPlan.damageProfile().amount(DamageChannel.FIRE));
     }
 
     private static ProjectilePlan projectile(String nodePath) {

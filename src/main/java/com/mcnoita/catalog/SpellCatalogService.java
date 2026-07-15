@@ -21,6 +21,8 @@ public final class SpellCatalogService {
 
     private final SpellCatalogValidator validator;
     private final AtomicReference<CatalogSnapshot> current = new AtomicReference<>();
+    /** Startup definitions never change; every datapack reload starts from this baseline. */
+    private Map<String, SpellDefinition> builtInDefinitions = Map.of();
     private Set<String> registeredIds = Set.of();
 
     public SpellCatalogService() {
@@ -52,6 +54,7 @@ public final class SpellCatalogService {
 
         Map<String, SpellDefinition> ordered = orderedDefinitions(candidate);
         CatalogSnapshot snapshot = snapshot(0L, ordered);
+        builtInDefinitions = ordered;
         registeredIds = Set.copyOf(ordered.keySet());
         current.set(snapshot);
         return snapshot;
@@ -69,7 +72,10 @@ public final class SpellCatalogService {
             return ReloadResult.rejected(previous, validation.errors());
         }
 
-        Map<String, SpellDefinition> nextDefinitions = new LinkedHashMap<>(previous.catalog().definitions());
+        // A resource reload represents the complete current override set. It
+        // must rebuild from startup definitions, not merge into the previous
+        // snapshot, so removing a datapack file restores its built-in value.
+        Map<String, SpellDefinition> nextDefinitions = new LinkedHashMap<>(builtInDefinitions);
         nextDefinitions.putAll(candidateOverrides);
         SpellCatalogValidator.ValidationResult mergedValidation = validator.validateInitial(nextDefinitions);
         if (!mergedValidation.isValid()) {
@@ -93,6 +99,14 @@ public final class SpellCatalogService {
             throw new IllegalStateException("spell catalog service has not been initialized");
         }
         return snapshot;
+    }
+
+    /** Listener-only read of immutable startup definitions for partial override decoding. */
+    synchronized Map<String, SpellDefinition> builtInDefinitions() {
+        if (current.get() == null) {
+            throw new IllegalStateException("spell catalog service has not been initialized");
+        }
+        return builtInDefinitions;
     }
 
     private static CatalogSnapshot snapshot(long epoch, Map<String, SpellDefinition> definitions) {

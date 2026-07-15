@@ -8,6 +8,7 @@ import net.minecraft.entity.Entity;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
 
 /**
@@ -27,7 +28,10 @@ public record WorldMutationContext(
         Objects.requireNonNull(world, "world");
         Objects.requireNonNull(expectedDimension, "expectedDimension");
         Objects.requireNonNull(executionIdentity, "executionIdentity");
-        budget = budget == null ? WorldMutationBudget.UNTRACKED : budget;
+        // Spell runtime contexts must fail closed when an integration forgets
+        // to supply a centrally accountable budget bridge. Temporary-light is
+        // the sole explicit caller allowed to pass UNTRACKED deliberately.
+        budget = budget == null ? WorldMutationBudget.DENIED : budget;
     }
 
     public static Optional<WorldMutationContext> forEntity(
@@ -36,19 +40,47 @@ public record WorldMutationContext(
         if (!(source.getWorld() instanceof ServerWorld world)) {
             return Optional.empty();
         }
+        Objects.requireNonNull(executionIdentity, "executionIdentity");
         UUID resolvedOwnerUuid = ownerUuid != null ? ownerUuid : owner == null ? null : owner.getUuid();
+        WorldMutationBudget budget = executionIdentity.isBound()
+            ? ServerWorldMutationBudget.forEntity(world, source, resolvedOwnerUuid, executionIdentity)
+            : WorldMutationBudget.DENIED;
         return Optional.of(new WorldMutationContext(world, source, resolvedOwnerUuid, world.getRegistryKey(), executionIdentity,
-            WorldMutationBudget.UNTRACKED));
+            budget));
     }
 
     public static Optional<WorldMutationContext> forPayload(
         World world, Entity owner, NoitaExecutionIdentity executionIdentity
     ) {
+        return forPayload(world, owner, executionIdentity, owner == null ? Vec3d.ZERO : owner.getPos());
+    }
+
+    /** Payload creation supplies its immediate spawn position for chunk-scoped charging. */
+    public static Optional<WorldMutationContext> forPayload(
+        World world, Entity owner, NoitaExecutionIdentity executionIdentity, Vec3d position
+    ) {
         if (!(world instanceof ServerWorld serverWorld)) {
             return Optional.empty();
         }
-        return Optional.of(new WorldMutationContext(serverWorld, null, owner == null ? null : owner.getUuid(),
-            serverWorld.getRegistryKey(), executionIdentity, WorldMutationBudget.UNTRACKED));
+        Objects.requireNonNull(executionIdentity, "executionIdentity");
+        Objects.requireNonNull(position, "position");
+        UUID ownerUuid = owner == null ? null : owner.getUuid();
+        WorldMutationBudget budget = executionIdentity.isBound()
+            ? ServerWorldMutationBudget.forPayload(serverWorld, ownerUuid, executionIdentity, position)
+            : WorldMutationBudget.DENIED;
+        return Optional.of(new WorldMutationContext(serverWorld, owner, ownerUuid,
+            serverWorld.getRegistryKey(), executionIdentity, budget));
+    }
+
+    /**
+     * Temporary light is cosmetic, short-lived state rather than terrain
+     * destruction. It still carries the loaded-chunk, border, adapter, and
+     * budget checks enforced by the world-mutation boundary.
+     */
+    public static WorldMutationContext forTemporaryLight(ServerWorld world) {
+        Objects.requireNonNull(world, "world");
+        return new WorldMutationContext(world, null, null, world.getRegistryKey(),
+            NoitaExecutionIdentity.unbound("temporary-light"), WorldMutationBudget.UNTRACKED);
     }
 
     public WorldMutationContext withBudget(WorldMutationBudget nextBudget) {
@@ -61,7 +93,7 @@ public record WorldMutationContext(
             return null;
         }
         ServerPlayerEntity player = world.getServer().getPlayerManager().getPlayer(ownerUuid);
-        if (player == null || player.isRemoved() || !player.isAlive() || player.getServerWorld() != world) {
+        if (player == null || player.isRemoved() || !player.isAlive() || player.isSpectator() || player.getServerWorld() != world) {
             return null;
         }
         return player;

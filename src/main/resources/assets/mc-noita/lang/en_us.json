@@ -381,5 +381,16 @@
   "tooltip.mc-noita.wand.speed_multiplier": "Speed multiplier: %sx",
   "tooltip.mc-noita.wand.spells_per_cast": "Spells per cast: %s",
   "tooltip.mc-noita.wand.spread": "Spread: %s deg",
-  "tooltip.mc-noita.yes": "Yes"
+  "tooltip.mc-noita.yes": "Yes",
+  "death.attack.mc_noita_projectile": "%1$s was struck by a Noita projectile",
+  "death.attack.mc_noita_explosion": "%1$s was caught in a Noita explosion",
+  "death.attack.mc_noita_fire": "%1$s burned in Noita fire",
+  "death.attack.mc_noita_electricity": "%1$s was electrocuted by Noita magic",
+  "death.attack.mc_noita_drill": "%1$s was drilled apart by Noita magic",
+  "death.attack.mc_noita_slice": "%1$s was sliced by Noita magic",
+  "death.attack.mc_noita_ice": "%1$s froze to Noita magic",
+  "death.attack.mc_noita_toxic": "%1$s succumbed to toxic Noita magic",
+  "death.attack.mc_noita_poison": "%1$s was poisoned by Noita magic",
+  "death.attack.mc_noita_curse": "%1$s was consumed by a Noita curse",
+  "death.attack.mc_noita_holy": "%1$s was judged by holy Noita magic"
 }

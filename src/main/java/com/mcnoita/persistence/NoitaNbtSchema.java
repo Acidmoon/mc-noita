@@ -11,7 +11,7 @@ import net.minecraft.nbt.NbtElement;
  */
 public final class NoitaNbtSchema {
     public static final String VERSION_KEY = "SchemaVersion";
-    public static final int CURRENT_VERSION = 3;
+    public static final int CURRENT_VERSION = 5;
 
     private NoitaNbtSchema() {
     }
@@ -39,6 +39,8 @@ public final class NoitaNbtSchema {
                 case 0 -> migrateV0ToV1(data, kind);
                 case 1 -> migrateV1ToV2(data, kind);
                 case 2 -> migrateV2ToV3(data, kind);
+                case 3 -> migrateV3ToV4(data, kind);
+                case 4 -> migrateV4ToV5(data, kind);
                 default -> throw new IllegalStateException("No migration registered for " + kind.id + " v" + version);
             }
             version++;
@@ -87,12 +89,37 @@ public final class NoitaNbtSchema {
         MCNoita.LOGGER.debug("Migrated {} NBT from v2 to v3", kind.id);
     }
 
+    private static void migrateV3ToV4(NbtCompound data, Kind kind) {
+        if (kind == Kind.PROJECTILE_PAYLOAD) {
+            // Historic scalar payload damage was always interpreted by the
+            // projectile path. Do not infer elemental damage from item names
+            // while migrating frozen data from an older catalog snapshot.
+            double legacyDamage = data.contains("Damage", NbtElement.NUMBER_TYPE) ? data.getDouble("Damage") : 0.0;
+            data.put(DamageProfileNbtCodec.PROFILE_KEY,
+                DamageProfileNbtCodec.legacyProjectileProfile(legacyDamage));
+        }
+        data.putInt(VERSION_KEY, 4);
+        MCNoita.LOGGER.debug("Migrated {} NBT from v3 to v4", kind.id);
+    }
+
+    private static void migrateV4ToV5(NbtCompound data, Kind kind) {
+        if (kind == Kind.SPELL_JOB) {
+            // v4 had no durable job grammar. Mark an attempted legacy job inert
+            // rather than guessing its world side effects during a save upgrade.
+            data.putString("State", "INERT");
+            data.putString("StateReason", "legacy job record has no frozen v5 definition");
+        }
+        data.putInt(VERSION_KEY, 5);
+        MCNoita.LOGGER.debug("Migrated {} NBT from v4 to v5", kind.id);
+    }
+
     public enum Kind {
         WAND_TEMPLATE("wand template"),
         WAND_SLOTS("wand slots"),
         CAST_STATE("wand cast state"),
         PROJECTILE_PAYLOAD("projectile payload"),
-        ENTITY("entity persistence");
+        ENTITY("entity persistence"),
+        SPELL_JOB("spell job persistence");
 
         private final String id;
 
